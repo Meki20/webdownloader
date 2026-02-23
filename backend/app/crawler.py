@@ -72,11 +72,48 @@ def extract_with_ytdlp(url: str) -> list[dict[str, Any]]:
                 return files
             # Normalize to dict and make JSON-serializable
             raw = ydl.sanitize_info(info) or {}
-    except Exception:
+    except Exception as e:
+        err_msg = str(e).lower()
+        # Instagram (and similar): "There is no video in this post" — try flat extract to get image/thumbnail
+        if "no video" in err_msg or "there is no video" in err_msg:
+            try:
+                flat_opts = {**opts, "extract_flat": True}
+                with yt_dlp.YoutubeDL(flat_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    if not info:
+                        return files
+                    raw = ydl.sanitize_info(info) or {}
+                    thumb = raw.get("thumbnail") or raw.get("thumb") or ""
+                    if not thumb and raw.get("thumbnails"):
+                        for t in raw.get("thumbnails") or []:
+                            if isinstance(t, dict) and t.get("url"):
+                                thumb = t.get("url", "")
+                                break
+                    if thumb:
+                        title = raw.get("title") or "Media"
+                        files.append({
+                            "id": str(uuid.uuid4()),
+                            "title": title,
+                            "type": "image",
+                            "thumbnail": thumb,
+                            "source": "yt-dlp",
+                            "url": thumb,
+                            "qualities": [{"url": thumb, "label": "default"}],
+                        })
+            except Exception:
+                pass
         return files
 
     title = raw.get("title") or "Media"
-    thumb = raw.get("thumbnail") or ""
+    thumb = raw.get("thumbnail") or raw.get("thumb") or ""
+    if not thumb and raw.get("thumbnails"):
+        for t in (raw["thumbnails"] or []):
+            if isinstance(t, dict) and t.get("url"):
+                thumb = t.get("url", "")
+                break
+            if isinstance(t, str):
+                thumb = t
+                break
 
     def _make_file(ftitle: str, ftype: str, thumbnail: str, qualities: list[dict[str, Any]]) -> dict[str, Any]:
         if not qualities:
@@ -204,6 +241,23 @@ def extract_from_html(page_url: str, html: str) -> list[dict[str, Any]]:
     files: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
     soup = BeautifulSoup(html, "html.parser")
+
+    # og:image / og:video (e.g. Instagram, Facebook) when page has no direct media
+    for prop, content in (("og:image", "image"), ("og:video", "video"), ("og:video:url", "video")):
+        tag = soup.find("meta", property=prop)
+        if tag and tag.get("content"):
+            u = _normalize_url(tag["content"], page_url)
+            if u and u not in seen_urls:
+                seen_urls.add(u)
+                files.append({
+                    "id": str(uuid.uuid4()),
+                    "url": u,
+                    "title": "Media",
+                    "type": content,
+                    "thumbnail": u if content == "image" else "",
+                    "source": "html",
+                    "qualities": [{"url": u, "label": "default"}],
+                })
 
     def add_one(url: str, title: str, kind: str) -> None:
         u = _normalize_url(url, page_url)

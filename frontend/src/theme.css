@@ -1,0 +1,80 @@
+/**
+ * Theme: all color and gradient variables for light and dark mode.
+ * File: frontend/src/theme.css
+ */
+
+:root,
+[data-theme="dark"] {
+  --bg: #3b3c40;
+  --bg-elevated: #524b4d;
+  --bg-hover: #524b4d;
+  --border: #5a5b60;
+  --text: #ffffff;
+  --text-muted: #b0b4c0;
+  --accent: #e07a7a;
+  --accent-dim: #a03030;
+  --danger: #ff6b6b;
+  --video: #a78bfa;
+  --audio: #4ade80;
+  --image: #7dd3fc;
+  --radius: 24px;
+  --font-sans: 'DM Sans', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+  --header-bg: linear-gradient(135deg, #353132 0%, #3a3536 50%, #353132 100%);
+  --header-shadow: 0 2px 12px rgba(0, 0, 0, 0.25);
+  --logo-gradient: linear-gradient(120deg, #e07a7a 0%, #c45c5c 50%, #a03030 100%);
+  --tab-active-bg: #524b4d;
+  --tab-pill-bg: #524b4d;
+  --tab-pill-shadow: none;
+  --bg-pattern: radial-gradient(ellipse 80% 50% at 50% -20%, rgba(139, 21, 56, 0.12), transparent),
+    radial-gradient(ellipse 60% 40% at 100% 50%, rgba(160, 48, 48, 0.06), transparent),
+    radial-gradient(ellipse 60% 40% at 0% 80%, rgba(224, 122, 122, 0.06), transparent);
+  --card-bg: #353132;
+  --card-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+  --group-header-bg: #353132;
+  --page-title-gradient: linear-gradient(120deg, #e07a7a 0%, #c45c5c 100%);
+  --hero-bg: #2b2829;
+  --hero-title-gradient: linear-gradient(120deg, #e6e8ef 0%, #e07a7a 50%, #c45c5c 100%);
+  --btn-primary-bg: linear-gradient(135deg, #e07a7a 0%, #a03030 100%);
+  --btn-primary-text: #ffffff;
+  --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23ffffff' d='M6 8L2 4h8z'/%3E%3C/svg%3E");
+}
+
+[data-theme="light"] {
+  --radius: 24px;
+  --bg: #f5f0f0;
+  --bg-elevated: #ffffff;
+  --bg-hover: #ebe5e5;
+  --border: #d8d0d0;
+  --text: #1d1d1f;
+  --text-muted: #8e8e93;
+  --accent: #c45c5c;
+  --accent-dim: #a03030;
+  --danger: #d70015;
+  --video: #8b5cf6;
+  --audio: #22c55e;
+  --image: #0ea5e9;
+  --header-bg: linear-gradient(135deg, #ffffff 0%, #faf0f0 50%, #ffffff 100%);
+  --header-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
+  --logo-gradient: linear-gradient(120deg, #e07a7a 0%, #c45c5c 50%, #a03030 100%);
+  --tab-active-bg: linear-gradient(180deg, #ebe5e5 0%, #f0ecec 100%);
+  --tab-pill-bg: linear-gradient(180deg, #ffffff 0%, #f5f0f0 100%);
+  --tab-pill-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  --bg-pattern: radial-gradient(ellipse 80% 50% at 50% -20%, rgba(192, 92, 92, 0.08), transparent),
+    radial-gradient(ellipse 60% 40% at 100% 50%, rgba(160, 48, 48, 0.05), transparent);
+  --card-bg: linear-gradient(165deg, #ffffff 0%, #faf8f8 100%);
+  --card-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
+  --group-header-bg: linear-gradient(90deg, #f5f0f0 0%, #faf8f8 100%);
+  --page-title-gradient: linear-gradient(120deg, #e07a7a 0%, #c45c5c 100%);
+  --hero-bg: linear-gradient(160deg, #faf0f0 0%, #ffffff 50%, #faf0f0 100%);
+  --hero-title-gradient: linear-gradient(120deg, #1d1d1f 0%, #e07a7a 50%, #c45c5c 100%);
+  --btn-primary-bg: linear-gradient(135deg, #e07a7a 0%, #a03030 100%);
+  --btn-primary-text: #1d1d1f;
+  --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%231d1d1f' d='M6 8L2 4h8z'/%3E%3C/svg%3E");
+}
+
+/* Dark theme: page background gradient (darker than cards) */
+html[data-theme="dark"] body {
+  background: linear-gradient(180deg, #2a2226 0%, #1a1b1e 100%);
+  background-image: linear-gradient(180deg, #2a2226 0%, #1a1b1e 100%), var(--bg-pattern);
+}

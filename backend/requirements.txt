@@ -4,3 +4,4 @@ yt-dlp>=2024.12.23
 httpx==0.28.1
 beautifulsoup4==4.12.3
 python-multipart==0.0.17
+python-dotenv==1.0.1

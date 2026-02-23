@@ -1,20 +1,4 @@
-:root {
-  --bg: #0d0e12;
-  --bg-elevated: #15171e;
-  --bg-hover: #1c1e28;
-  --border: #2a2d3a;
-  --text: #e6e8ef;
-  --text-muted: #8b8f9e;
-  --accent: #00d4aa;
-  --accent-dim: #00a884;
-  --danger: #ff6b6b;
-  --video: #6b8cff;
-  --audio: #b388ff;
-  --image: #69db7c;
-  --radius: 10px;
-  --font-sans: 'DM Sans', system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', monospace;
-}
+@import './theme.css';
 
 * {
   box-sizing: border-box;
@@ -24,6 +8,7 @@ body {
   margin: 0;
   min-height: 100vh;
   background: var(--bg);
+  background-image: var(--bg-pattern);
   color: var(--text);
   font-family: var(--font-sans);
   font-size: 15px;
@@ -45,6 +30,17 @@ input {
   font-family: inherit;
 }
 
+/* Custom dropdown arrow with exact spacing (theme-aware color) */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 36px;
+  background-image: var(--select-arrow);
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  background-size: 12px;
+}
+
 a {
   color: var(--accent);
   text-decoration: none;
@@ -60,4 +56,161 @@ button:disabled {
 
 button:not(:disabled):hover {
   filter: brightness(1.08);
+}
+
+/* Animations and transitions */
+button,
+input,
+select,
+.download-queue-strip,
+.about-section,
+.settings-section {
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, filter 0.15s ease, opacity 0.2s ease;
+}
+
+.download-queue-strip {
+  animation: fadeIn 0.25s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+[role="tab"] {
+  transition: background-color 0.25s ease, color 0.25s ease, transform 0.2s ease;
+}
+
+.tab-content {
+  min-height: 120px;
+}
+
+.tab-content-enter {
+  animation-duration: 0.35s;
+  animation-timing-function: ease;
+  animation-fill-mode: forwards;
+}
+
+.tab-content-enter-right {
+  animation-name: tabEnterFromRight;
+}
+
+.tab-content-enter-left {
+  animation-name: tabEnterFromLeft;
+}
+
+@keyframes tabEnterFromRight {
+  from {
+    opacity: 0;
+    transform: translateX(28%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes tabEnterFromLeft {
+  from {
+    opacity: 0;
+    transform: translateX(-28%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.file-row-anim {
+  animation: rowIn 0.2s ease;
+}
+
+@keyframes rowIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes queue-bar-indeterminate {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
+}
+
+.settings-grid {
+  margin-bottom: 8px;
+}
+@media (max-width: 640px) {
+  .settings-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* Mobile layout */
+@media (max-width: 640px) {
+  .app-layout {
+    padding-left: 12px !important;
+    padding-right: 12px !important;
+  }
+  .main-content {
+    padding-top: 16px !important;
+    padding-bottom: 16px !important;
+  }
+  .app-header nav[role="tablist"] {
+    padding-left: 12px !important;
+    padding-right: 12px !important;
+  }
+  .app-header nav[role="tablist"] > div {
+    gap: 6px;
+  }
+  .app-header [role="tab"] {
+    padding: 10px 14px !important;
+    font-size: 14px !important;
+  }
+  .url-input-wrap .url-input-row {
+    flex-direction: column;
+    gap: 10px;
+  }
+  .url-input-wrap .url-input-row input,
+  .url-input-wrap .url-input-row button {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+  }
+  .download-type-cards {
+    grid-template-columns: 1fr !important;
+  }
+  .history-section .history-row {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .history-section .history-row .main {
+    min-width: 0;
+    flex: 1 1 100%;
+  }
+  .history-section .history-row .main + .meta,
+  .history-section .history-row .actions {
+    flex-shrink: 0;
+  }
+  .downloads-content .file-list-row {
+    flex-wrap: wrap;
+  }
+  .downloads-content .file-list-row .file-list-quality-wrap {
+    width: 100%;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .downloads-content .group-header-btn {
+    padding: 12px 14px !important;
+    gap: 10px;
+  }
+  .downloads-content .group-header-btn .group-thumb-img,
+  .downloads-content .group-header-btn .group-thumb-placeholder {
+    width: 40px !important;
+    height: 40px !important;
+    min-width: 40px !important;
+    min-height: 40px !important;
+  }
 }

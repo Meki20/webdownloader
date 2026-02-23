@@ -19,7 +19,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.config import CORS_ORIGINS
 from app.crawler import crawl_url
+from app.middleware import APIKeyMiddleware, RateLimitMiddleware
 
 _executor = ThreadPoolExecutor(max_workers=4)
 
@@ -31,18 +33,32 @@ found_files: dict[str, list] = {}  # crawl_id -> list of file dicts
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
-    # cleanup if needed
     pass
 
 
 app = FastAPI(title="WebDownloader", lifespan=lifespan)
+
+app.add_middleware(APIKeyMiddleware)
+app.add_middleware(RateLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/api/health")
+async def health():
+    """Liveness: is the process up."""
+    return {"status": "ok"}
+
+
+@app.get("/api/ready")
+async def ready():
+    """Readiness: can serve traffic."""
+    return {"status": "ready"}
 
 
 def _run_crawl_sync(crawl_id: str, url: str) -> None:

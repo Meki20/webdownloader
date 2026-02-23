@@ -1,6 +1,6 @@
 # WebDownloader
 
-A web app that crawls links (YouTube, Instagram, or any URL), finds media (videos, audio, images), and lets you download them — similar to JDownloader. Runs on **Windows** and **Ubuntu Linux** (including as a systemd service).
+A web app that crawls links (YouTube, Instagram, or any URL), finds media (videos, audio, images), and lets you download them — similar to JDownloader. **Deployment-ready**: configurable CORS, rate limiting, optional API key, health checks. Runs on **Windows** and **Ubuntu Linux** (including as a systemd service).
 
 ## Stack
 
@@ -62,9 +62,27 @@ For production on Ubuntu, run the app as a systemd service (backend only; it ser
 
 3. **Enable and start**: `sudo systemctl daemon-reload && sudo systemctl enable webdownloader && sudo systemctl start webdownloader`. Open **http://your-server:8000**.
 
+## SaaS / production deployment
+
+Set environment variables (e.g. in systemd `Environment=` or a `.env` file in the backend directory):
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `CORS_ORIGINS` | Allowed origins (comma-separated), or `*` for all | `https://app.example.com` or `*` |
+| `RATE_LIMIT_PER_MINUTE` | Max requests per IP per minute (0 = disabled) | `60` |
+| `API_KEY` | If set, all `/api/*` requests must send `X-API-Key` (except `/api/health`, `/api/ready`) | `your-secret-key` |
+| `LOG_LEVEL` | Logging level | `INFO` |
+
+Copy `backend/.env.example` to `backend/.env` and edit. Health checks:
+
+- **GET /api/health** — liveness
+- **GET /api/ready** — readiness
+
 ## Usage
 
-1. **Add link** — Paste a URL (e.g. YouTube, Instagram, or any webpage) and click **Find files**.
-2. **Found files** — All discovered videos, audio, and images appear here. Click **Download** to save (yt-dlp is used for supported sites for faster downloads).
+1. **Home** — Paste a URL (YouTube, Instagram, or any webpage) and click **Find files**. Recent crawls are listed below.
+2. **Downloads** — All discovered videos, audio, and images. Choose quality and format, then **Download**. List can be sorted by recent, type, or title.
+3. **History** — Persistent list of URLs you’ve crawled. Edit title, **Find again**, or remove.
+4. **Settings** — Theme (light/dark/system) and about.
 
 Crawls run in the background; the list refreshes every few seconds until the crawl finishes.

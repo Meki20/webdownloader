@@ -1,66 +1,53 @@
 import { useState, useEffect, useCallback } from 'react'
+import { Header } from './components/Header'
+import { Hero } from './components/Hero'
+import { UrlInput } from './components/UrlInput'
+import { FileList } from './components/FileList'
+import { HistoryList } from './components/HistoryList'
+import { Settings } from './components/Settings'
+import { About } from './components/About'
+import { DownloadQueueStrip } from './components/DownloadQueueStrip'
+import { DownloadTypeCards } from './components/DownloadTypeCards'
+import type { Crawl, FoundFile, HistoryEntry, Theme } from './types'
+import { OUTPUT_FORMATS } from './constants'
+import * as historyLib from './lib/history'
+import { initTheme, getStoredTheme, applyTheme } from './lib/theme'
+import { loadSettings, applyNamingTemplate, type UserSettings } from './lib/settings'
 
 const API = '/api'
 
-const OUTPUT_FORMATS: Record<string, { value: string; label: string }[]> = {
-  video: [
-    { value: 'mp4', label: 'MP4' },
-    { value: 'mkv', label: 'MKV' },
-    { value: 'webm', label: 'WebM' },
-    { value: 'avi', label: 'AVI' },
-    { value: 'flv', label: 'FLV' },
-  ],
-  audio: [
-    { value: 'mp3', label: 'MP3' },
-    { value: 'm4a', label: 'M4A' },
-    { value: 'aac', label: 'AAC' },
-    { value: 'ogg', label: 'OGG' },
-    { value: 'wav', label: 'WAV' },
-    { value: 'flac', label: 'FLAC' },
-    { value: 'opus', label: 'Opus' },
-  ],
-  image: [
-    { value: 'png', label: 'PNG' },
-    { value: 'jpg', label: 'JPG' },
-    { value: 'webp', label: 'WebP' },
-  ],
-}
-
-const DEFAULT_OUTPUT_FORMAT: Record<string, string> = {
-  video: 'mp4',
-  audio: 'mp3',
-  image: 'png',
-}
-
-type Crawl = {
-  id: string
-  url: string
-  status: 'running' | 'completed' | 'failed'
-  fileCount: number
-  error: string | null
-}
-
-type Quality = { url: string; label: string; format_id?: string | null }
-
-type FoundFile = {
-  id: string
-  url: string
-  title: string
-  type: 'video' | 'audio' | 'image'
-  thumbnail: string
-  source: string
-  crawlId?: string
-  crawlUrl?: string
-  qualities?: Quality[]
-}
+type TabId = 'home' | 'downloads' | 'queue' | 'history' | 'settings' | 'about'
+const TAB_ORDER: TabId[] = ['home', 'downloads', 'queue', 'history', 'settings', 'about']
+type ProgressState = { phase: 'downloading' | 'converting' | 'streaming'; progress: number | null; bytes: number }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'add' | 'found'>('add')
+  const [activeTab, setActiveTab] = useState<TabId>('home')
+  const [tabDirection, setTabDirection] = useState<'left' | 'right'>('right')
+
+  function handleTabChange(tab: TabId) {
+    const fromIdx = TAB_ORDER.indexOf(activeTab)
+    const toIdx = TAB_ORDER.indexOf(tab)
+    setTabDirection(toIdx > fromIdx ? 'right' : 'left')
+    setActiveTab(tab)
+  }
   const [inputUrl, setInputUrl] = useState('')
   const [crawls, setCrawls] = useState<Crawl[]>([])
   const [files, setFiles] = useState<FoundFile[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>(() => historyLib.loadHistory())
+  const [theme, setTheme] = useState<Theme>(() => getStoredTheme())
+  const [settings, setSettings] = useState<UserSettings>(() => loadSettings())
+  const [downloadQueue, setDownloadQueue] = useState<FoundFile[]>([])
+  const [activeDownloadIds, setActiveDownloadIds] = useState<string[]>([])
+  const [downloadProgress, setDownloadProgress] = useState<Record<string, ProgressState>>({})
+  const [downloadError, setDownloadError] = useState<string | null>(null)
+  const [pendingSearchUrl, setPendingSearchUrl] = useState<string | null>(null)
+  const queueConcurrency = settings.downloadConcurrency
+
+  useEffect(() => {
+    initTheme()
+  }, [])
 
   const fetchCrawls = useCallback(async () => {
     try {
@@ -76,15 +63,45 @@ export default function App() {
     } catch (_) {}
   }, [])
 
+  const hasRunningCrawl = crawls.some((c) => c.status === 'running')
+  // Poll only when Home or Downloads is active and page visible; slower interval to avoid rate limits
   useEffect(() => {
     fetchCrawls()
     fetchFiles()
+    const isRelevant = activeTab === 'home' || activeTab === 'downloads'
+    if (!isRelevant) return
+    const intervalMs = hasRunningCrawl ? 4000 : 8000
     const t = setInterval(() => {
+      if (document.visibilityState === 'hidden') return
       fetchCrawls()
       fetchFiles()
-    }, 2000)
+    }, intervalMs)
     return () => clearInterval(t)
-  }, [fetchCrawls, fetchFiles])
+  }, [activeTab, hasRunningCrawl, fetchCrawls, fetchFiles])
+
+  // Clear "searching" state when we have files for this URL or crawl finished
+  useEffect(() => {
+    if (!pendingSearchUrl) return
+    const crawlDone = crawls.some((c) => c.url === pendingSearchUrl && (c.status === 'completed' || c.status === 'failed'))
+    const hasFilesForUrl = files.some((f) => f.crawlUrl === pendingSearchUrl)
+    if (crawlDone || hasFilesForUrl) setPendingSearchUrl(null)
+  }, [pendingSearchUrl, crawls, files])
+
+  // Sync history with crawl results (most recent crawl per URL)
+  useEffect(() => {
+    let changed = false
+    const next = historyEntries.map((e) => {
+      const crawl = crawls.find((c) => c.url === e.url) // crawls are newest first
+      if (!crawl) return e
+      if (e.lastCrawlId === crawl.id && e.lastFileCount === crawl.fileCount && e.lastStatus === crawl.status) return e
+      changed = true
+      return { ...e, lastCrawlId: crawl.id, lastFileCount: crawl.fileCount, lastStatus: crawl.status }
+    })
+    if (changed) {
+      historyLib.saveHistory(next)
+      setHistoryEntries(next)
+    }
+  }, [crawls])
 
   async function startCrawl() {
     const url = inputUrl.trim()
@@ -100,7 +117,9 @@ export default function App() {
       const crawl = await r.json()
       setCrawls((prev) => [crawl, ...prev])
       setInputUrl('')
-      setActiveTab('found')
+      setHistoryEntries(historyLib.addToHistory({ id: crypto.randomUUID(), url, title: url, lastCrawlId: crawl.id, lastFileCount: 0, lastStatus: 'running' }))
+      setPendingSearchUrl(url)
+      handleTabChange('downloads')
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to start crawl')
     } finally {
@@ -108,13 +127,27 @@ export default function App() {
     }
   }
 
+  function startCrawlByUrl(url: string) {
+    setInputUrl(url)
+    setError(null)
+    setLoading(true)
+    fetch(`${API}/crawls?url=${encodeURIComponent(url)}`, { method: 'POST' })
+      .then(async (r) => {
+        if (!r.ok) throw new Error(await r.text())
+        return r.json()
+      })
+      .then((crawl) => {
+        setCrawls((prev) => [crawl, ...prev])
+        setHistoryEntries(historyLib.addToHistory({ id: crypto.randomUUID(), url, title: url, lastCrawlId: crawl.id, lastFileCount: 0, lastStatus: 'running' }))
+        setPendingSearchUrl(url)
+        handleTabChange('downloads')
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : 'Failed to start crawl'))
+      .finally(() => setLoading(false))
+  }
+
   const [selectedQuality, setSelectedQuality] = useState<Record<string, number>>({})
   const [selectedFormat, setSelectedFormat] = useState<Record<string, string>>({})
-  const [downloadingId, setDownloadingId] = useState<string | null>(null)
-  const [downloadPhase, setDownloadPhase] = useState<'downloading' | 'converting' | 'streaming' | null>(null)
-  const [downloadProgress, setDownloadProgress] = useState<number | null>(null)
-  const [downloadBytes, setDownloadBytes] = useState<number>(0)
-  const [downloadError, setDownloadError] = useState<string | null>(null)
 
   function getDownloadUrl(file: FoundFile, qualityIndex?: number): string {
     const q = file.qualities && file.qualities.length > 0
@@ -124,17 +157,17 @@ export default function App() {
   }
 
   function suggestDownloadFilename(file: FoundFile): string {
-    const title = (file.title || 'download').replace(/[/\\:*?"<>|]/g, '_').trim().slice(0, 180) || 'download'
+    const name = (file.title || 'download').trim()
     const ext = getExtensionForFile(file)
-    return ext ? `${title}.${ext}` : title
+    const base = applyNamingTemplate(settings.namingTemplate, name, ext)
+    return ext ? `${base}.${ext}` : base
   }
 
   function getOutputFormat(file: FoundFile): string {
-    return selectedFormat[file.id] ?? DEFAULT_OUTPUT_FORMAT[file.type] ?? (file.type === 'video' ? 'mp4' : file.type === 'audio' ? 'mp3' : 'png')
+    return selectedFormat[file.id] ?? settings.defaultFormats[file.type] ?? (file.type === 'video' ? 'mp4' : file.type === 'audio' ? 'mp3' : 'png')
   }
 
   function getExtensionForFile(file: FoundFile): string {
-    // Use selected output format when we have a format dropdown (video/audio/image)
     if (OUTPUT_FORMATS[file.type]) return getOutputFormat(file)
     const u = getDownloadUrl(file)
     const path = u.split('?')[0]
@@ -146,10 +179,25 @@ export default function App() {
     return ''
   }
 
-  async function downloadFile(file: FoundFile) {
+  const setProgress = useCallback((fileId: string, patch: Partial<ProgressState> | null) => {
+    if (patch === null) {
+      setDownloadProgress((prev) => {
+        const next = { ...prev }
+        delete next[fileId]
+        return next
+      })
+      return
+    }
+    setDownloadProgress((prev) => {
+      const current = prev[fileId] ?? { phase: 'downloading' as const, progress: null, bytes: 0 }
+      return { ...prev, [fileId]: { ...current, ...patch } }
+    })
+  }, [])
+
+  async function performDownload(file: FoundFile) {
     const filename = suggestDownloadFilename(file)
     const useYtDlp = file.source === 'yt-dlp' && file.crawlUrl && (file.type === 'video' || file.type === 'audio')
-    const qualityIndex = selectedQuality[file.id] ?? 0
+    const qualityIndex = selectedQuality[file.id] ?? settings.defaultQualityIndex ?? 0
     const selectedQ = file.qualities?.[qualityIndex]
     const qualityLabel = selectedQ?.label
     const formatId = selectedQ && 'format_id' in selectedQ ? (selectedQ.format_id ?? undefined) : undefined
@@ -173,13 +221,9 @@ export default function App() {
       ? `${API}/download-ytdlp?${params.toString()}`
       : `${API}/download?${params.toString()}`
 
-    setDownloadError(null)
-    setDownloadProgress(null)
-    setDownloadBytes(0)
-    setDownloadPhase(null)
-    setDownloadingId(file.id)
     const expectProgressStream = useYtDlp && file.type === 'video'
     try {
+      setProgress(file.id, { phase: 'downloading', progress: null, bytes: 0 })
       const res = await fetch(apiUrl)
       if (!res.ok) throw new Error(res.status === 502 ? 'Download failed (server or source error)' : `Download failed (${res.status})`)
       const totalHeader = res.headers.get('Content-Length')
@@ -192,82 +236,90 @@ export default function App() {
       const fileChunks: Uint8Array[] = []
       let fileReceived = 0
       let lastPct = -1
+      let lastBytesReport = 0
       const decoder = new TextDecoder('utf-8')
+
+      function processStreamingChunk(data: Uint8Array): Uint8Array {
+        if (fileSizeFromStream == null || fileSizeFromStream <= 0) return data
+        const rem = fileSizeFromStream - fileReceived
+        const take = Math.min(rem, data.length)
+        if (take > 0) {
+          fileChunks.push(take === data.length ? data : data.subarray(0, take))
+          fileReceived += take
+          const pct = Math.min(100, Math.round((fileReceived / fileSizeFromStream) * 100))
+          if (pct !== lastPct) {
+            lastPct = pct
+            setProgress(file.id, { phase: 'streaming', progress: pct, bytes: 0 })
+          }
+        }
+        return data.length > take ? data.subarray(take) : new Uint8Array(0)
+      }
+
       for (;;) {
         const { done, value } = await reader.read()
-        if (done && !value?.length) break
-        if (value && expectProgressStream && fileSizeFromStream == null) {
-          const combined = new Uint8Array(buffer.length + value.length)
-          combined.set(buffer)
-          combined.set(value, buffer.length)
-          buffer = combined
-        } else if (value && (fileSizeFromStream != null || !expectProgressStream)) {
-          if (fileSizeFromStream != null && fileSizeFromStream > 0) {
-            const rem = fileSizeFromStream - fileReceived
-            const take = Math.min(rem, value.length)
-            fileChunks.push(take === value.length ? value : value.subarray(0, take))
-            fileReceived += take
-            const pct = Math.min(100, Math.round((fileReceived / fileSizeFromStream) * 100))
-            if (pct !== lastPct) {
-              lastPct = pct
-              setDownloadProgress(pct)
-            }
-          } else {
-            chunks.push(value)
-            const totalReceived = chunks.reduce((a, c) => a + c.length, 0)
-            if (totalNum > 0) setDownloadProgress(Math.min(100, Math.round((totalReceived / totalNum) * 100)))
-            else setDownloadBytes(totalReceived)
+        const hasValue = value && value.length > 0
+
+        if (expectProgressStream && fileSizeFromStream == null) {
+          if (hasValue) {
+            const combined = new Uint8Array(buffer.length + value!.length)
+            combined.set(buffer)
+            combined.set(value!, buffer.length)
+            buffer = combined
           }
-          continue
-        } else if (value) {
-          const combined = new Uint8Array(buffer.length + value.length)
-          combined.set(buffer)
-          combined.set(value, buffer.length)
-          buffer = combined
-        }
-        if (!expectProgressStream) {
-          if (value) chunks.push(value)
-          continue
-        }
-        let newlineIdx = buffer.indexOf(0x0a)
-        while (newlineIdx >= 0) {
-          const lineBytes = buffer.slice(0, newlineIdx)
-          buffer = buffer.slice(newlineIdx + 1)
-          try {
-            const obj = JSON.parse(decoder.decode(lineBytes)) as { progress?: { phase?: string; size?: number } }
-            const phase = obj.progress?.phase
-            const size = obj.progress?.size
-            if (phase) {
-              setDownloadPhase(phase as 'downloading' | 'converting' | 'streaming')
-              if (phase === 'streaming' && typeof size === 'number' && size > 0) {
-                fileSizeFromStream = size
-                totalNum = size
-                const take = Math.min(size, buffer.length)
-                if (take > 0) {
-                  fileChunks.push(buffer.slice(0, take))
-                  fileReceived = take
-                  if (buffer.length > take) {
-                    const rest = Math.min(size - take, buffer.length - take)
-                    fileChunks.push(buffer.slice(take, take + rest))
-                    fileReceived += rest
-                  }
-                  buffer = new Uint8Array(0)
-                  const pct = Math.min(100, Math.round((fileReceived / size) * 100))
-                  setDownloadProgress(pct)
-                  lastPct = pct
+          let newlineIdx = buffer.indexOf(0x0a)
+          while (newlineIdx >= 0) {
+            const lineBytes = buffer.slice(0, newlineIdx)
+            buffer = buffer.slice(newlineIdx + 1)
+            try {
+              const obj = JSON.parse(decoder.decode(lineBytes)) as { progress?: { phase?: string; size?: number } }
+              const phase = obj.progress?.phase
+              const size = obj.progress?.size
+              if (phase) {
+                setProgress(file.id, { phase: phase as ProgressState['phase'], progress: null, bytes: 0 })
+                if (phase === 'streaming' && typeof size === 'number' && size > 0) {
+                  fileSizeFromStream = size
+                  totalNum = size
+                  buffer = processStreamingChunk(buffer)
                 }
               }
+            } catch {
+              /* ignore parse errors */
             }
-          } catch {
-            /* ignore */
+            newlineIdx = buffer.indexOf(0x0a)
           }
-          newlineIdx = buffer.indexOf(0x0a)
+        } else if (fileSizeFromStream != null && (hasValue || buffer.length > 0)) {
+          if (hasValue && buffer.length > 0) {
+            const combined = new Uint8Array(buffer.length + value!.length)
+            combined.set(buffer)
+            combined.set(value!, buffer.length)
+            buffer = combined
+          } else if (hasValue) {
+            buffer = value!
+          }
+          buffer = processStreamingChunk(buffer)
+        } else if (!expectProgressStream && hasValue) {
+          chunks.push(value!)
+          const totalReceived = chunks.reduce((a, c) => a + c.length, 0)
+          if (totalNum > 0) {
+            const pct = Math.min(100, Math.round((totalReceived / totalNum) * 100))
+            if (pct !== lastPct) {
+              lastPct = pct
+              setProgress(file.id, { phase: 'streaming', progress: pct, bytes: totalReceived })
+            }
+          } else {
+            if (lastBytesReport === 0 || totalReceived - lastBytesReport >= 1024 * 100) {
+              lastBytesReport = totalReceived
+              setProgress(file.id, { phase: 'streaming', progress: null, bytes: totalReceived })
+            }
+          }
         }
+
         if (done) break
       }
-      if (expectProgressStream && fileSizeFromStream != null && fileSizeFromStream > 0 && buffer.length > 0) {
+
+      if (expectProgressStream && fileSizeFromStream != null && buffer.length > 0) {
         const rem = fileSizeFromStream - fileReceived
-        if (rem > 0) fileChunks.push(buffer.slice(0, rem))
+        if (rem > 0) fileChunks.push(buffer.slice(0, Math.min(rem, buffer.length)))
       }
       const blob = new Blob(
         expectProgressStream && fileChunks.length > 0 ? fileChunks : chunks.length > 0 ? chunks : buffer.length > 0 ? [buffer] : []
@@ -284,387 +336,120 @@ export default function App() {
     } catch (e) {
       setDownloadError(e instanceof Error ? e.message : 'Download failed')
     } finally {
-      setDownloadingId(null)
-      setDownloadPhase(null)
-      setDownloadProgress(null)
-      setDownloadBytes(0)
+      setActiveDownloadIds((prev) => prev.filter((id) => id !== file.id))
+      setDownloadQueue((prev) => prev.filter((f) => f.id !== file.id))
+      setProgress(file.id, null)
     }
   }
 
-  function downloadButtonLabel(fileId: string): string {
-    if (downloadingId !== fileId) return 'Download'
-    if (downloadPhase === 'downloading') return 'Downloading…'
-    if (downloadPhase === 'converting') return 'Converting…'
-    if (downloadPhase === 'streaming' && downloadProgress != null) return `${downloadProgress}%`
-    if (downloadPhase === 'streaming') return 'Sending…'
-    if (downloadBytes > 0) return `Downloading ${(downloadBytes / 1024 / 1024).toFixed(1)} MB`
-    return 'Downloading…'
+  function addToQueue(file: FoundFile) {
+    setDownloadQueue((prev) => (prev.some((f) => f.id === file.id) ? prev : [...prev, file]))
   }
 
-  const typeColor = (t: string) =>
-    t === 'video' ? 'var(--video)' : t === 'audio' ? 'var(--audio)' : 'var(--image)'
+  function removeFromQueue(fileId: string) {
+    setDownloadQueue((prev) => prev.filter((f) => f.id !== fileId))
+  }
+
+  useEffect(() => {
+    const waiting = downloadQueue.filter((f) => !activeDownloadIds.includes(f.id))
+    const slots = queueConcurrency - activeDownloadIds.length
+    if (slots <= 0 || waiting.length === 0) return
+    const toStart = waiting.slice(0, slots)
+    setActiveDownloadIds((prev) => [...prev, ...toStart.map((f) => f.id)])
+    toStart.forEach((file) => performDownload(file))
+  }, [downloadQueue, activeDownloadIds.length, queueConcurrency])
+
+  /** Label for Queue page only: shows phase and progress/bytes */
+  function queueItemLabel(fileId: string): string {
+    const prog = downloadProgress[fileId]
+    if (!prog) return 'Queued'
+    if (prog.phase === 'downloading') return 'Downloading'
+    if (prog.phase === 'converting') return 'Converting'
+    if (prog.phase === 'streaming' && prog.progress != null) return `${prog.progress}%`
+    if (prog.phase === 'streaming' && prog.bytes > 0) return `${(prog.bytes / 1024 / 1024).toFixed(1)} MB`
+    if (prog.phase === 'streaming') return 'Sending'
+    if (prog.bytes > 0) return `${(prog.bytes / 1024 / 1024).toFixed(1)} MB`
+    return prog.phase
+  }
+
+  /** Label for Downloads page button only: never show progress, just Add to queue / In queue */
+  function downloadButtonLabel(fileId: string): string {
+    return downloadQueue.some((f) => f.id === fileId) ? 'In queue' : 'Add to queue'
+  }
+
+  function handleThemeChange(t: Theme) {
+    setTheme(t)
+    applyTheme(t)
+  }
 
   return (
-    <div style={styles.layout}>
-      <header style={styles.header}>
-        <h1 style={styles.logo}>WebDownloader</h1>
-        <nav style={styles.nav}>
-          <button
-            style={{ ...styles.tab, ...(activeTab === 'add' ? styles.tabActive : {}) }}
-            onClick={() => setActiveTab('add')}
-          >
-            Add link
-          </button>
-          <button
-            style={{ ...styles.tab, ...(activeTab === 'found' ? styles.tabActive : {}) }}
-            onClick={() => setActiveTab('found')}
-          >
-            Found files {files.length > 0 && `(${files.length})`}
-          </button>
-        </nav>
-      </header>
-
-      <main style={styles.main}>
-        {activeTab === 'add' && (
-          <section style={styles.section}>
-            <p style={styles.lead}>
-              Paste a YouTube, Instagram, or any page URL. We'll find videos, audio, and images.
-            </p>
-            <div style={styles.inputRow}>
-              <input
-                type="url"
-                placeholder="https://www.youtube.com/watch?v=..."
-                value={inputUrl}
-                onChange={(e) => setInputUrl(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && startCrawl()}
-                style={styles.input}
-                disabled={loading}
-              />
-              <button
-                style={styles.btn}
-                onClick={startCrawl}
-                disabled={loading}
-              >
-                {loading ? 'Crawling…' : 'Find files'}
-              </button>
-            </div>
-            {error && <p style={styles.error}>{error}</p>}
-            {crawls.length > 0 && (
-              <div style={styles.crawlList}>
-                <h3 style={styles.subtitle}>Recent crawls</h3>
-                {crawls.slice(0, 10).map((c) => (
-                  <div key={c.id} style={styles.crawlRow}>
-                    <span style={styles.crawlUrl}>{c.url}</span>
-                    <span
-                      style={{
-                        ...styles.crawlStatus,
-                        color:
-                          c.status === 'completed'
-                            ? 'var(--accent)'
-                            : c.status === 'failed'
-                              ? 'var(--danger)'
-                              : 'var(--text-muted)',
-                      }}
-                    >
-                      {c.status === 'running' && '⏳ Running…'}
-                      {c.status === 'completed' && `✓ ${c.fileCount} files`}
-                      {c.status === 'failed' && (c.error || 'Failed')}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
+    <div className="app-layout" style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', maxWidth: 960, margin: '0 auto', padding: '0 20px' }}>
+      <Header activeTab={activeTab} onTab={handleTabChange} downloadCount={files.length} queueCount={downloadQueue.length} />
+      <main style={{ flex: 1, padding: '24px 0', overflow: 'hidden' }} className="main-content">
+        <div key={activeTab} className={`tab-content tab-content-enter tab-content-enter-${tabDirection}`}>
+        {activeTab === 'home' && (
+          <>
+            <Hero />
+            <UrlInput
+              value={inputUrl}
+              onChange={setInputUrl}
+              onSubmit={startCrawl}
+              loading={loading}
+              error={error}
+            />
+            <DownloadTypeCards />
+          </>
         )}
-
-        {activeTab === 'found' && (
-          <section style={styles.section}>
-            <h2 style={styles.subtitle}>Found files</h2>
-            {downloadError && <p style={styles.error}>{downloadError}</p>}
-            {files.length === 0 ? (
-              <p style={styles.empty}>No files yet. Add a link and run a crawl.</p>
-            ) : (
-              <ul style={styles.fileList}>
-                {files.map((f) => (
-                  <li key={f.id} style={styles.fileRow}>
-                    <div style={styles.fileThumb}>
-                      {f.thumbnail ? (
-                        <img
-                          src={f.thumbnail}
-                          alt=""
-                          style={styles.thumbImg}
-                          onError={(e) => {
-                            (e.target as HTMLImageElement).style.display = 'none'
-                          }}
-                        />
-                      ) : (
-                        <span style={{ ...styles.typeIcon, color: typeColor(f.type) }}>
-                          {f.type === 'video' && '▶'}
-                          {f.type === 'audio' && '♫'}
-                          {f.type === 'image' && '🖼'}
-                        </span>
-                      )}
-                    </div>
-                    <div style={styles.fileInfo}>
-                      <span style={styles.fileTitle}>{f.title || 'Untitled'}</span>
-                      <span style={styles.fileMeta}>
-                        <span style={{ color: typeColor(f.type), textTransform: 'capitalize' }}>
-                          {f.type}
-                        </span>
-                        {f.qualities && f.qualities.length > 1 && (
-                          <span style={styles.qualityCount}>{f.qualities.length} qualities</span>
-                        )}
-                        {f.crawlUrl && (
-                          <span style={styles.fileSource}>{f.crawlUrl}</span>
-                        )}
-                      </span>
-                    </div>
-                    <div style={styles.qualityRow}>
-                      {OUTPUT_FORMATS[f.type] && (
-                        <select
-                          style={styles.qualitySelect}
-                          value={getOutputFormat(f)}
-                          onChange={(e) => setSelectedFormat((prev) => ({ ...prev, [f.id]: e.target.value }))}
-                          aria-label="Format"
-                          title="Output format"
-                        >
-                          {OUTPUT_FORMATS[f.type].map((opt) => (
-                            <option key={opt.value} value={opt.value}>{opt.label}</option>
-                          ))}
-                        </select>
-                      )}
-                      {f.qualities && f.qualities.length > 1 && (
-                        <select
-                          style={styles.qualitySelect}
-                          value={selectedQuality[f.id] ?? 0}
-                          onChange={(e) => setSelectedQuality((prev) => ({ ...prev, [f.id]: Number(e.target.value) }))}
-                          aria-label="Quality"
-                        >
-                          {f.qualities.map((q, i) => (
-                            <option key={i} value={i}>{q.label}</option>
-                          ))}
-                        </select>
-                      )}
-                      <button
-                        style={styles.downloadBtn}
-                        onClick={() => downloadFile(f)}
-                        disabled={downloadingId !== null}
-                        title={f.qualities && f.qualities.length > 1 ? 'Download selected quality' : 'Download'}
-                      >
-                        {downloadButtonLabel(f.id)}
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
+        {activeTab === 'downloads' && (
+          <FileList
+              files={files}
+              pendingSearchUrl={pendingSearchUrl}
+              selectedQuality={selectedQuality}
+              setSelectedQuality={setSelectedQuality}
+              selectedFormat={selectedFormat}
+              setSelectedFormat={setSelectedFormat}
+              downloadError={downloadError}
+              getDownloadUrl={getDownloadUrl}
+              getOutputFormat={getOutputFormat}
+              getExtensionForFile={getExtensionForFile}
+              suggestDownloadFilename={suggestDownloadFilename}
+              downloadButtonLabel={downloadButtonLabel}
+              onDownload={addToQueue}
+              defaultQualityIndex={settings.defaultQualityIndex}
+            />
         )}
+        {activeTab === 'queue' && (
+          <DownloadQueueStrip
+            queue={downloadQueue}
+            activeIds={activeDownloadIds}
+            progress={downloadProgress}
+            onRemove={removeFromQueue}
+            getLabel={queueItemLabel}
+            fullPage
+          />
+        )}
+        {activeTab === 'history' && (
+          <HistoryList
+            entries={historyEntries}
+            onUpdateTitle={(id, title) => setHistoryEntries(historyLib.updateHistoryEntry(id, { title }))}
+            onDelete={(id) => setHistoryEntries(historyLib.removeFromHistory(id))}
+            onReCrawl={(url) => startCrawlByUrl(url)}
+          />
+        )}
+        {activeTab === 'settings' && (
+          <Settings
+            theme={theme}
+            onThemeChange={handleThemeChange}
+            onClearHistory={() => {
+              historyLib.saveHistory([])
+              setHistoryEntries([])
+            }}
+            onSettingsChange={setSettings}
+          />
+        )}
+        {activeTab === 'about' && <About />}
+        </div>
       </main>
     </div>
   )
-}
-
-const styles: Record<string, React.CSSProperties> = {
-  layout: {
-    minHeight: '100vh',
-    display: 'flex',
-    flexDirection: 'column',
-    maxWidth: 900,
-    margin: '0 auto',
-    padding: '0 24px',
-  },
-  header: {
-    padding: '24px 0',
-    borderBottom: '1px solid var(--border)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    flexWrap: 'wrap',
-    gap: 16,
-  },
-  logo: {
-    margin: 0,
-    fontSize: '1.5rem',
-    fontWeight: 700,
-    fontFamily: 'var(--font-mono)',
-    letterSpacing: '-0.02em',
-    color: 'var(--accent)',
-  },
-  nav: {
-    display: 'flex',
-    gap: 4,
-  },
-  tab: {
-    padding: '10px 18px',
-    background: 'transparent',
-    color: 'var(--text-muted)',
-    borderRadius: 'var(--radius)',
-    fontWeight: 500,
-    fontSize: 14,
-  },
-  tabActive: {
-    background: 'var(--bg-elevated)',
-    color: 'var(--text)',
-  },
-  main: {
-    flex: 1,
-    padding: '32px 0',
-  },
-  section: {
-    width: '100%',
-  },
-  lead: {
-    color: 'var(--text-muted)',
-    marginBottom: 24,
-    fontSize: 15,
-  },
-  inputRow: {
-    display: 'flex',
-    gap: 12,
-    marginBottom: 8,
-  },
-  input: {
-    flex: 1,
-    padding: '14px 18px',
-    background: 'var(--bg-elevated)',
-    border: '1px solid var(--border)',
-    borderRadius: 'var(--radius)',
-    color: 'var(--text)',
-    fontSize: 15,
-  },
-  btn: {
-    padding: '14px 24px',
-    background: 'var(--accent)',
-    color: 'var(--bg)',
-    borderRadius: 'var(--radius)',
-    fontWeight: 600,
-    fontSize: 15,
-  },
-  error: {
-    color: 'var(--danger)',
-    marginTop: 8,
-    fontSize: 14,
-  },
-  crawlList: {
-    marginTop: 32,
-  },
-  subtitle: {
-    fontSize: 14,
-    fontWeight: 600,
-    color: 'var(--text-muted)',
-    marginBottom: 12,
-    textTransform: 'uppercase',
-    letterSpacing: '0.05em',
-  },
-  crawlRow: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 16,
-    padding: '12px 0',
-    borderBottom: '1px solid var(--border)',
-    fontSize: 14,
-  },
-  crawlUrl: {
-    color: 'var(--text-muted)',
-    fontFamily: 'var(--font-mono)',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
-    flex: 1,
-    minWidth: 0,
-  },
-  crawlStatus: {
-    flexShrink: 0,
-  },
-  empty: {
-    color: 'var(--text-muted)',
-    marginTop: 24,
-  },
-  fileList: {
-    listStyle: 'none',
-    margin: 0,
-    padding: 0,
-  },
-  fileRow: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 16,
-    padding: '14px 0',
-    borderBottom: '1px solid var(--border)',
-  },
-  fileThumb: {
-    width: 64,
-    height: 64,
-    borderRadius: 8,
-    background: 'var(--bg-elevated)',
-    overflow: 'hidden',
-    flexShrink: 0,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  thumbImg: {
-    width: '100%',
-    height: '100%',
-    objectFit: 'cover',
-  },
-  typeIcon: {
-    fontSize: 24,
-  },
-  fileInfo: {
-    flex: 1,
-    minWidth: 0,
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 4,
-  },
-  fileTitle: {
-    fontWeight: 500,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
-  },
-  fileMeta: {
-    fontSize: 13,
-    color: 'var(--text-muted)',
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-  },
-  fileSource: {
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
-    maxWidth: 200,
-  },
-  qualityCount: {
-    color: 'var(--text-muted)',
-    fontSize: 13,
-  },
-  qualityRow: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    flexShrink: 0,
-  },
-  qualitySelect: {
-    padding: '8px 12px',
-    background: 'var(--bg-elevated)',
-    border: '1px solid var(--border)',
-    borderRadius: 'var(--radius)',
-    color: 'var(--text)',
-    fontSize: 13,
-    fontFamily: 'inherit',
-  },
-  downloadBtn: {
-    padding: '10px 18px',
-    background: 'var(--bg-hover)',
-    color: 'var(--accent)',
-    borderRadius: 'var(--radius)',
-    fontWeight: 500,
-    fontSize: 14,
-    flexShrink: 0,
-  },
 }
