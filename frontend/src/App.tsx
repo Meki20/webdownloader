@@ -11,6 +11,7 @@ import { DownloadTypeCards } from './components/DownloadTypeCards'
 import type { Crawl, FoundFile, HistoryEntry, Theme } from './types'
 import { OUTPUT_FORMATS } from './constants'
 import * as historyLib from './lib/history'
+import { randomUUID } from './lib/utils'
 import { initTheme, getStoredTheme, applyTheme } from './lib/theme'
 import { loadSettings, applyNamingTemplate, type UserSettings } from './lib/settings'
 
@@ -117,7 +118,7 @@ export default function App() {
       const crawl = await r.json()
       setCrawls((prev) => [crawl, ...prev])
       setInputUrl('')
-      setHistoryEntries(historyLib.addToHistory({ id: crypto.randomUUID(), url, title: url, lastCrawlId: crawl.id, lastFileCount: 0, lastStatus: 'running' }))
+      setHistoryEntries(historyLib.addToHistory({ id: randomUUID(), url, title: url, lastCrawlId: crawl.id, lastFileCount: 0, lastStatus: 'running' }))
       setPendingSearchUrl(url)
       handleTabChange('downloads')
     } catch (e) {
@@ -138,7 +139,7 @@ export default function App() {
       })
       .then((crawl) => {
         setCrawls((prev) => [crawl, ...prev])
-        setHistoryEntries(historyLib.addToHistory({ id: crypto.randomUUID(), url, title: url, lastCrawlId: crawl.id, lastFileCount: 0, lastStatus: 'running' }))
+        setHistoryEntries(historyLib.addToHistory({ id: randomUUID(), url, title: url, lastCrawlId: crawl.id, lastFileCount: 0, lastStatus: 'running' }))
         setPendingSearchUrl(url)
         handleTabChange('downloads')
       })

@@ -1,10 +1,10 @@
-# WebDownloader systemd service (Ubuntu / Linux)
+# WebDownloader systemd service (Ubuntu / Linux) — serves app on LAN (0.0.0.0:8000)
 # 1. Copy: sudo cp deploy/webdownloader.service /etc/systemd/system/
-# 2. Edit paths: sudo nano /etc/systemd/system/webdownloader.service
-#    Set User=, Group=, and paths below to your install directory.
+# 2. Edit: sudo nano /etc/systemd/system/webdownloader.service
+#    Set User=, Group=, WorkingDirectory, PATH, and ExecStart to your install path (e.g. /opt/webdownloader).
 # 3. Reload and enable: sudo systemctl daemon-reload && sudo systemctl enable webdownloader
 # 4. Start: sudo systemctl start webdownloader
-# 5. Check: sudo systemctl status webdownloader
+# 5. Open from any device: http://YOUR_SERVER_IP:8000
 
 [Unit]
 Description=WebDownloader (backend + static frontend)
@@ -16,7 +16,10 @@ User=www-data
 Group=www-data
 WorkingDirectory=/opt/webdownloader/backend
 Environment="PATH=/opt/webdownloader/backend/.venv/bin:/usr/local/bin:/usr/bin:/bin"
-ExecStart=/opt/webdownloader/backend/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Environment="CORS_ORIGINS=*"
+# Use the venv's Python directly to avoid 203/EXEC (shebang/interpreter issues under systemd).
+# Use --host 127.0.0.1 when behind nginx so port 8000 is not exposed.
+ExecStart=/opt/webdownloader/backend/.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 Restart=on-failure
 RestartSec=5
 
