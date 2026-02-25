@@ -322,16 +322,16 @@ export default function App() {
       let totalNum = totalHeader ? parseInt(totalHeader, 10) : 0
       if (!res.body) throw new Error('No response body')
       const reader = res.body.getReader()
-      const chunks: Uint8Array<ArrayBufferLike>[] = []
-      let buffer: Uint8Array<ArrayBufferLike> = new Uint8Array(0)
+      const chunks: Uint8Array[] = []
+      let buffer: Uint8Array = new Uint8Array(0)
       let fileSizeFromStream: number | null = null
-      const fileChunks: Uint8Array<ArrayBufferLike>[] = []
+      const fileChunks: Uint8Array[] = []
       let fileReceived = 0
       let lastPct = -1
       let lastBytesReport = 0
       const decoder = new TextDecoder('utf-8')
 
-      function processStreamingChunk(data: Uint8Array<ArrayBufferLike>): Uint8Array<ArrayBufferLike> {
+      function processStreamingChunk(data: Uint8Array): Uint8Array {
         if (fileSizeFromStream == null || fileSizeFromStream <= 0) return data
         const rem = fileSizeFromStream - fileReceived
         const take = Math.min(rem, data.length)
@@ -371,7 +371,7 @@ export default function App() {
                 if (phase === 'streaming' && typeof size === 'number' && size > 0) {
                   fileSizeFromStream = size
                   totalNum = size
-                  buffer = processStreamingChunk(buffer)
+                  buffer = processStreamingChunk(buffer) as unknown as Uint8Array
                 }
               }
             } catch {
@@ -384,11 +384,11 @@ export default function App() {
             const combined = new Uint8Array(buffer.length + value!.length)
             combined.set(buffer)
             combined.set(value!, buffer.length)
-            buffer = combined
+            buffer = combined as unknown as Uint8Array
           } else if (hasValue) {
             buffer = value!
           }
-          buffer = processStreamingChunk(buffer)
+          buffer = processStreamingChunk(buffer) as unknown as Uint8Array
         } else if (!expectProgressStream && hasValue) {
           chunks.push(value!)
           const totalReceived = chunks.reduce((a, c) => a + c.length, 0)
