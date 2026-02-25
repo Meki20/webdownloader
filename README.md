@@ -129,6 +129,8 @@ To put WebDownloader behind nginx (e.g. to use port 80/443, HTTPS, or another si
   ```
   Save and exit. The repo must be a git clone (e.g. from [github.com/Meki20/webdownloader](https://github.com/Meki20/webdownloader)); the script runs `git fetch origin main` and `git reset --hard origin/main`.
 
+- **If "Check for updates" returns 503:** The service user (`www-data`) needs read access to the git repo. Run: `sudo chown -R www-data:www-data /opt/webdownloader` (use your install path). Ensure `git` is installed (`apt install git`).
+
 ## SaaS / production deployment
 
 Set environment variables (e.g. in systemd `Environment=` or a `.env` file in the backend directory):

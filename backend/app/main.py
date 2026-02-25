@@ -66,15 +66,10 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 def _updates_check_sync() -> dict:
-    """Check if repo is behind origin/main. Runs in executor."""
+    """Check if repo is behind origin/main. Uses existing refs (read-only; no git fetch)."""
     import subprocess as sp
     try:
-        sp.run(
-            ["git", "-C", str(_REPO_ROOT), "fetch", "origin", "main"],
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
+        # Compare HEAD to origin/main without fetching (avoids needing write access to .git for www-data)
         r = sp.run(
             ["git", "-C", str(_REPO_ROOT), "rev-list", "--count", "HEAD..origin/main"],
             capture_output=True,
@@ -82,7 +77,8 @@ def _updates_check_sync() -> dict:
             timeout=5,
         )
         if r.returncode != 0:
-            return {"error": "Not a git repo or origin/main not found"}
+            err = (r.stderr or r.stdout or "").strip() or "Not a git repo or origin/main not found"
+            return {"error": err}
         behind = int(r.stdout.strip() or "0")
         current = sp.run(
             ["git", "-C", str(_REPO_ROOT), "rev-parse", "HEAD"],
