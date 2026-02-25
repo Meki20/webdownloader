@@ -37,6 +37,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if request.url.path.startswith("/api/health") or request.url.path.startswith("/api/ready"):
             return await call_next(request)
+        if request.url.path.startswith("/api/updates/check"):
+            return await call_next(request)
         ip = _get_client_ip(request)
         if _rate_limit_exceeded(ip):
             return JSONResponse(
@@ -53,6 +55,8 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         if not API_KEY:
             return await call_next(request)
         if request.url.path.startswith("/api/health") or request.url.path.startswith("/api/ready"):
+            return await call_next(request)
+        if request.url.path.startswith("/api/updates/check"):
             return await call_next(request)
         if not request.url.path.startswith("/api/"):
             return await call_next(request)

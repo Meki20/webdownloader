@@ -4,6 +4,12 @@ import { applyTheme } from '../lib/theme'
 import { loadSettings, saveSettings, type UserSettings, type DefaultFormats } from '../lib/settings'
 import { OUTPUT_FORMATS } from '../constants'
 
+const API = '/api'
+type UpdateCheckResult =
+  | { upToDate: true; currentSha?: string }
+  | { upToDate: false; behind: number; currentSha?: string; latestSha?: string }
+  | { error: string }
+
 type Props = {
   theme: Theme
   onThemeChange: (t: Theme) => void
@@ -106,6 +112,10 @@ const styles: Record<string, React.CSSProperties> = {
 
 export function Settings({ theme, onThemeChange, onClearHistory, onSettingsChange }: Props) {
   const [settings, setSettingsState] = useState<UserSettings>(() => loadSettings())
+  const [checkStatus, setCheckStatus] = useState<'idle' | 'checking'>('idle')
+  const [checkResult, setCheckResult] = useState<UpdateCheckResult | null>(null)
+  const [installStatus, setInstallStatus] = useState<'idle' | 'installing' | 'done' | 'error'>('idle')
+  const [installError, setInstallError] = useState<string | null>(null)
 
   useEffect(() => {
     onSettingsChange?.(settings)
@@ -118,6 +128,40 @@ export function Settings({ theme, onThemeChange, onClearHistory, onSettingsChang
 
   const setDefaultFormats = (type: keyof DefaultFormats, value: string) => {
     update({ defaultFormats: { ...settings.defaultFormats, [type]: value } })
+  }
+
+  async function handleCheckUpdates() {
+    setCheckStatus('checking')
+    setCheckResult(null)
+    try {
+      const r = await fetch(`${API}/updates/check`)
+      const data = await r.json().catch(() => ({}))
+      if (!r.ok) setCheckResult({ error: data.detail || r.statusText || 'Check failed' })
+      else setCheckResult(data as UpdateCheckResult)
+    } catch (e) {
+      setCheckResult({ error: e instanceof Error ? e.message : 'Check failed' })
+    } finally {
+      setCheckStatus('idle')
+    }
+  }
+
+  async function handleInstallUpdate() {
+    setInstallStatus('installing')
+    setInstallError(null)
+    try {
+      const r = await fetch(`${API}/updates/install`, { method: 'POST' })
+      const data = await r.json().catch(() => ({}))
+      if (!r.ok) {
+        setInstallError(data.detail || r.statusText || 'Install failed')
+        setInstallStatus('error')
+      } else {
+        setInstallStatus('done')
+        setCheckResult(null)
+      }
+    } catch (e) {
+      setInstallError(e instanceof Error ? e.message : 'Install failed')
+      setInstallStatus('error')
+    }
   }
 
   return (
@@ -226,6 +270,52 @@ export function Settings({ theme, onThemeChange, onClearHistory, onSettingsChang
           </select>
         </div>
       </div>
+      </div>
+
+      <div style={styles.block}>
+        <div style={styles.blockTitle}>Updates</div>
+        <p style={styles.hint}>Pull latest from GitHub (main) and restart the app. Only applies when running from a git clone (e.g. Ubuntu deploy).</p>
+        <div style={{ ...styles.row, flexWrap: 'wrap', gap: 12, alignItems: 'center' }}>
+          <button
+            type="button"
+            style={styles.btn}
+            onClick={handleCheckUpdates}
+            disabled={checkStatus === 'checking'}
+          >
+            {checkStatus === 'checking' ? 'Checking…' : 'Check for updates'}
+          </button>
+          {checkResult && 'error' in checkResult && (
+            <span style={{ color: 'var(--danger)', fontSize: 14 }}>{checkResult.error}</span>
+          )}
+          {checkResult && 'upToDate' in checkResult && checkResult.upToDate && (
+            <span style={{ color: 'var(--text-muted)', fontSize: 14 }}>You're up to date.</span>
+          )}
+          {checkResult && 'upToDate' in checkResult && !checkResult.upToDate && 'behind' in checkResult && (
+            <>
+              <span style={{ color: 'var(--text)', fontSize: 14 }}>
+                {checkResult.behind} update{checkResult.behind !== 1 ? 's' : ''} available.
+              </span>
+              <button
+                type="button"
+                style={{ ...styles.btn, background: 'var(--btn-primary-bg)', color: 'var(--btn-primary-text)' }}
+                onClick={handleInstallUpdate}
+                disabled={installStatus === 'installing'}
+              >
+                {installStatus === 'installing' ? 'Updating…' : 'Install update'}
+              </button>
+            </>
+          )}
+        </div>
+        {installStatus === 'done' && (
+          <p style={{ marginTop: 12, marginBottom: 0, fontSize: 14, color: 'var(--success, var(--text))' }}>
+            Update complete. Reload the page to use the new version.
+          </p>
+        )}
+        {installStatus === 'error' && installError && (
+          <p style={{ marginTop: 12, marginBottom: 0, fontSize: 14, color: 'var(--danger)' }}>
+            {installError}
+          </p>
+        )}
       </div>
 
       <div style={styles.about}>

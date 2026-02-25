@@ -61,6 +61,96 @@ async def ready():
     return {"status": "ready"}
 
 
+# Repo root (backend/app/main.py -> backend -> repo root)
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def _updates_check_sync() -> dict:
+    """Check if repo is behind origin/main. Runs in executor."""
+    import subprocess as sp
+    try:
+        sp.run(
+            ["git", "-C", str(_REPO_ROOT), "fetch", "origin", "main"],
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        r = sp.run(
+            ["git", "-C", str(_REPO_ROOT), "rev-list", "--count", "HEAD..origin/main"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if r.returncode != 0:
+            return {"error": "Not a git repo or origin/main not found"}
+        behind = int(r.stdout.strip() or "0")
+        current = sp.run(
+            ["git", "-C", str(_REPO_ROOT), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        latest = sp.run(
+            ["git", "-C", str(_REPO_ROOT), "rev-parse", "origin/main"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        current_sha = (current.stdout or "").strip()[:12] if current.returncode == 0 else ""
+        latest_sha = (latest.stdout or "").strip()[:12] if latest.returncode == 0 else ""
+        if behind == 0:
+            return {"upToDate": True, "currentSha": current_sha}
+        return {
+            "upToDate": False,
+            "behind": behind,
+            "currentSha": current_sha,
+            "latestSha": latest_sha,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _updates_install_sync() -> str | None:
+    """Run update script. Returns None on success, error message on failure."""
+    import subprocess as sp
+    script = _REPO_ROOT / "deploy" / "update-ubuntu.sh"
+    if not script.is_file():
+        return "Update script not found"
+    try:
+        result = sp.run(
+            ["sudo", str(script)],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            cwd=str(_REPO_ROOT),
+        )
+        if result.returncode != 0:
+            return result.stderr or result.stdout or f"Exit code {result.returncode}"
+        return None
+    except Exception as e:
+        return str(e)
+
+
+@app.get("/api/updates/check")
+async def updates_check():
+    """Check if the app is behind origin/main."""
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(_executor, _updates_check_sync)
+    if "error" in result:
+        raise HTTPException(status_code=503, detail=result["error"])
+    return result
+
+
+@app.post("/api/updates/install")
+async def updates_install():
+    """Pull from main, rebuild frontend, restart service. Requires sudo for the update script."""
+    loop = asyncio.get_event_loop()
+    err = await loop.run_in_executor(_executor, _updates_install_sync)
+    if err:
+        raise HTTPException(status_code=500, detail=err)
+    return {"ok": True}
+
+
 def _run_crawl_sync(crawl_id: str, url: str) -> None:
     try:
         loop = asyncio.new_event_loop()
