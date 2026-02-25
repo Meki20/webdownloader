@@ -195,11 +195,53 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _GITHUB_REPO = "Meki20/webdownloader"
 
 
+def _get_tag_commit_sha(tag_name: str) -> str | None:
+    """Resolve a tag to its commit SHA via GitHub API. Returns None on failure."""
+    ref_url = f"https://api.github.com/repos/{_GITHUB_REPO}/git/refs/tags/{tag_name}"
+    ref_resp = httpx.get(ref_url, timeout=10, headers={"Accept": "application/vnd.github.v3+json"})
+    if ref_resp.status_code != 200:
+        return None
+    obj = (ref_resp.json().get("object") or {})
+    sha = (obj.get("sha") or "").strip()
+    kind = (obj.get("type") or "").strip().lower()
+    if kind == "commit":
+        return sha if len(sha) == 40 else None
+    if kind == "tag":
+        tag_url = obj.get("url")
+        if not tag_url:
+            return None
+        tag_resp = httpx.get(tag_url, timeout=10, headers={"Accept": "application/vnd.github.v3+json"})
+        if tag_resp.status_code != 200:
+            return None
+        obj2 = (tag_resp.json().get("object") or {})
+        sha2 = (obj2.get("sha") or "").strip()
+        return sha2 if len(sha2) == 40 else None
+    return None
+
+
 def _updates_check_sync() -> dict:
-    """Check if repo is behind the latest GitHub release (tag)."""
+    """
+    Check if the installed commit is behind the latest GitHub release.
+    Compares current HEAD commit SHA to the latest release's commit SHA (from GitHub API).
+    """
     import subprocess as sp
     try:
-        # Get latest release tag from GitHub API
+        # Current HEAD commit SHA
+        head = sp.run(
+            ["git", "-C", str(_REPO_ROOT), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if head.returncode != 0 or not (head.stdout or "").strip():
+            return {"error": "Not a git repository or could not read HEAD"}
+        current_sha = (head.stdout or "").strip()
+
+        # Version info for display (tag or dev/short sha)
+        version_info = _version_info_sync()
+        current_version = (version_info.get("version") or "dev").strip() or "dev"
+
+        # Latest release from GitHub
         r = httpx.get(
             f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest",
             timeout=10,
@@ -207,59 +249,73 @@ def _updates_check_sync() -> dict:
         )
         if r.status_code != 200:
             return {"error": "No releases found" if r.status_code == 404 else f"GitHub API: {r.status_code}"}
-        tag_name = (r.json().get("tag_name") or "").strip()
-        if not tag_name:
+        data = r.json()
+        latest_tag = (data.get("tag_name") or "").strip()
+        if not latest_tag:
             return {"error": "No release tag in response"}
-        # Fetch the tag so we can compare (needs write to .git)
-        sp.run(
-            ["git", "-C", str(_REPO_ROOT), "fetch", "origin", "tag", tag_name],
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
-        r2 = sp.run(
-            ["git", "-C", str(_REPO_ROOT), "rev-list", "--count", f"HEAD..{tag_name}"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if r2.returncode != 0:
-            err = (r2.stderr or r2.stdout or "").strip() or f"Could not compare to {tag_name}"
-            return {"error": err}
-        behind = int(r2.stdout.strip() or "0")
-        current = sp.run(
-            ["git", "-C", str(_REPO_ROOT), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-        latest = sp.run(
-            ["git", "-C", str(_REPO_ROOT), "rev-parse", tag_name],
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-        current_sha = (current.stdout or "").strip()[:12] if current.returncode == 0 else ""
-        latest_sha = (latest.stdout or "").strip()[:12] if latest.returncode == 0 else ""
-        if behind == 0:
-            return {"upToDate": True, "currentSha": current_sha, "latestTag": tag_name}
+
+        # Resolve latest release tag to commit SHA
+        latest_sha = _get_tag_commit_sha(latest_tag)
+        if not latest_sha:
+            return {"error": f"Could not resolve tag {latest_tag} to commit"}
+
+        # Compare by commit: same commit = up to date
+        if current_sha == latest_sha:
+            return {
+                "upToDate": True,
+                "currentVersion": current_version,
+                "latestTag": latest_tag,
+                "currentSha": current_sha[:12],
+                "latestSha": latest_sha[:12],
+            }
+
+        # Different commit: check how many commits we're behind (optional, requires fetch)
+        behind = 1
+        try:
+            fetch = sp.run(
+                ["git", "-C", str(_REPO_ROOT), "fetch", "origin", "tag", latest_tag, "--no-write-fetch-head"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if fetch.returncode == 0:
+                rev_list = sp.run(
+                    ["git", "-C", str(_REPO_ROOT), "rev-list", "--count", f"{current_sha}..{latest_tag}"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if rev_list.returncode == 0 and (rev_list.stdout or "").strip().isdigit():
+                    behind = max(1, int((rev_list.stdout or "").strip()))
+        except Exception:
+            pass
+
         return {
             "upToDate": False,
             "behind": behind,
-            "currentSha": current_sha,
-            "latestSha": latest_sha,
-            "latestTag": tag_name,
+            "currentVersion": current_version,
+            "latestTag": latest_tag,
+            "currentSha": current_sha[:12],
+            "latestSha": latest_sha[:12],
         }
     except Exception as e:
         return {"error": str(e)}
 
 
 def _updates_install_sync() -> str | None:
-    """Run update script. Returns None on success, error message on failure."""
+    """
+    Run update script (Ubuntu/server only). Returns None on success, error message on failure.
+    On non-Linux (e.g. Windows dev) returns a clear message instead of running sudo.
+    """
     import subprocess as sp
+    if sys.platform != "linux":
+        return (
+            "One-click update is only supported on Linux (e.g. Ubuntu server). "
+            "On this machine, update manually: fetch the latest release tag, checkout, rebuild, and restart."
+        )
     script = _REPO_ROOT / "deploy" / "update-ubuntu.sh"
     if not script.is_file():
-        return "Update script not found"
+        return "Update script not found (deploy/update-ubuntu.sh). Run updates manually on the server."
     try:
         result = sp.run(
             ["sudo", str(script)],
@@ -271,6 +327,8 @@ def _updates_install_sync() -> str | None:
         if result.returncode != 0:
             return result.stderr or result.stdout or f"Exit code {result.returncode}"
         return None
+    except FileNotFoundError:
+        return "sudo or update script not found. Install is only supported on Linux with sudo."
     except Exception as e:
         return str(e)
 
@@ -399,11 +457,13 @@ async def updates_check():
 
 @app.post("/api/updates/install")
 async def updates_install():
-    """Checkout latest GitHub release, rebuild frontend, restart service. Requires sudo for the update script."""
+    """Checkout latest GitHub release, rebuild frontend, restart service. Linux only (sudo + update script)."""
     loop = asyncio.get_event_loop()
     err = await loop.run_in_executor(_executor, _updates_install_sync)
     if err:
-        raise HTTPException(status_code=500, detail=err)
+        # 503 when install is not supported on this environment (e.g. Windows); 500 for real failures
+        status = 503 if "only supported on Linux" in err or "only supported on Linux with sudo" in err else 500
+        raise HTTPException(status_code=status, detail=err)
     return {"ok": True}
 
 

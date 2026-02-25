@@ -6,8 +6,8 @@ import { OUTPUT_FORMATS } from '../constants'
 
 const API = '/api'
 type UpdateCheckResult =
-  | { upToDate: true; currentSha?: string }
-  | { upToDate: false; behind: number; currentSha?: string; latestSha?: string }
+  | { upToDate: true; currentVersion?: string; latestTag?: string }
+  | { upToDate: false; behind: number; currentVersion?: string; latestTag?: string }
   | { error: string; unavailable?: boolean }
 
 type Props = {
@@ -291,12 +291,14 @@ export function Settings({ settings, theme, onThemeChange, onClearHistory, onSet
             </span>
           )}
           {checkResult && 'upToDate' in checkResult && checkResult.upToDate && (
-            <span style={{ color: 'var(--text-muted)', fontSize: 14 }}>You're up to date.</span>
+            <span style={{ color: 'var(--text-muted)', fontSize: 14 }}>
+              You're up to date{checkResult.latestTag ? ` (${checkResult.latestTag})` : ''}.
+            </span>
           )}
           {checkResult && 'upToDate' in checkResult && !checkResult.upToDate && 'behind' in checkResult && (
             <>
               <span style={{ color: 'var(--text)', fontSize: 14 }}>
-                {checkResult.behind} update{checkResult.behind !== 1 ? 's' : ''} available.
+                Update available: {checkResult.currentVersion ?? 'current'} → {checkResult.latestTag ?? 'latest'}.
               </span>
               <button
                 type="button"

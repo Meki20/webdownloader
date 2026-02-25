@@ -12,14 +12,12 @@ GITHUB_REPO="Meki20/webdownloader"
 echo "Fetching latest release from GitHub..."
 TAG=$(curl -sS -H "Accept: application/vnd.github.v3+json" "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" | grep '"tag_name"' | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')
 if [ -z "$TAG" ]; then
-  echo "No release found. Falling back to origin/main."
-  git fetch origin main
-  git reset --hard origin/main
-else
-  echo "Checking out release $TAG..."
-  git fetch origin tag "$TAG"
-  git reset --hard "$TAG"
+  echo "No release found. Updates are from GitHub releases only."
+  exit 1
 fi
+echo "Checking out release $TAG..."
+git fetch origin tag "$TAG"
+git reset --hard "$TAG"
 
 echo "Backend: updating Python deps..."
 cd "$ROOT/backend"
