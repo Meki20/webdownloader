@@ -275,26 +275,38 @@ def _updates_install_sync() -> str | None:
 
 
 def _version_info_sync() -> dict:
-    """Current version (git describe) and release info from GitHub for that tag."""
+    """Current version: tag if HEAD points at one, else find release whose tag = HEAD, else commit short SHA."""
     import subprocess as sp
     out: dict = {"version": "dev"}
     try:
-        r = sp.run(
-            ["git", "-C", str(_REPO_ROOT), "describe", "--tags", "--exact-match"],
+        head_sha = None
+        r_sha = sp.run(
+            ["git", "-C", str(_REPO_ROOT), "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
             timeout=2,
         )
-        if r.returncode != 0:
-            r2 = sp.run(
-                ["git", "-C", str(_REPO_ROOT), "describe", "--tags"],
+        if r_sha.returncode == 0 and (r_sha.stdout or "").strip():
+            head_sha = (r_sha.stdout or "").strip()
+        # Prefer tag that points at current commit (works in detached HEAD at a tag)
+        r_pt = sp.run(
+            ["git", "-C", str(_REPO_ROOT), "tag", "-l", "--points-at", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        tag = None
+        if r_pt.returncode == 0 and (r_pt.stdout or "").strip():
+            tag = (r_pt.stdout or "").strip().splitlines()[0].strip()
+        if not tag:
+            r = sp.run(
+                ["git", "-C", str(_REPO_ROOT), "describe", "--tags", "--exact-match"],
                 capture_output=True,
                 text=True,
                 timeout=2,
             )
-            tag = (r2.stdout or "").strip() if r2.returncode == 0 else None
-        else:
-            tag = (r.stdout or "").strip()
+            if r.returncode == 0 and (r.stdout or "").strip():
+                tag = (r.stdout or "").strip()
         if tag:
             out["version"] = tag
             out["tag"] = tag
@@ -312,15 +324,56 @@ def _version_info_sync() -> dict:
                     out["html_url"] = data.get("html_url") or ""
             except Exception:
                 pass
-        else:
-            r3 = sp.run(
-                ["git", "-C", str(_REPO_ROOT), "rev-parse", "--short", "HEAD"],
-                capture_output=True,
-                text=True,
-                timeout=2,
-            )
-            if r3.returncode == 0 and (r3.stdout or "").strip():
-                out["version"] = (r3.stdout or "").strip()
+        elif head_sha:
+            # No local tag at HEAD: find a release whose tag points to this commit via GitHub API
+            try:
+                list_resp = httpx.get(
+                    f"https://api.github.com/repos/{_GITHUB_REPO}/releases",
+                    timeout=10,
+                    headers={"Accept": "application/vnd.github.v3+json"},
+                )
+                if list_resp.status_code == 200:
+                    for release in list_resp.json():
+                        t = (release.get("tag_name") or "").strip()
+                        if not t:
+                            continue
+                        ref_resp = httpx.get(
+                            f"https://api.github.com/repos/{_GITHUB_REPO}/git/refs/tags/{t}",
+                            timeout=5,
+                            headers={"Accept": "application/vnd.github.v3+json"},
+                        )
+                        if ref_resp.status_code != 200:
+                            continue
+                        obj = (ref_resp.json().get("object") or {})
+                        if obj.get("type") == "tag":
+                            # annotated tag: need one more request for the commit
+                            obj_resp = httpx.get(
+                                obj.get("url"),
+                                timeout=5,
+                                headers={"Accept": "application/vnd.github.v3+json"},
+                            )
+                            if obj_resp.status_code == 200:
+                                obj = obj_resp.json().get("object") or {}
+                        ref_sha = (obj.get("sha") or "").strip()
+                        if ref_sha and (ref_sha == head_sha or ref_sha.startswith(head_sha) or head_sha.startswith(ref_sha)):
+                            out["version"] = t
+                            out["tag"] = t
+                            out["name"] = release.get("name") or t
+                            out["body"] = release.get("body") or ""
+                            out["published_at"] = release.get("published_at") or ""
+                            out["html_url"] = release.get("html_url") or ""
+                            break
+            except Exception:
+                pass
+            if out["version"] == "dev":
+                r_short = sp.run(
+                    ["git", "-C", str(_REPO_ROOT), "rev-parse", "--short", "HEAD"],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+                if r_short.returncode == 0 and (r_short.stdout or "").strip():
+                    out["version"] = (r_short.stdout or "").strip()
     except Exception:
         pass
     return out
