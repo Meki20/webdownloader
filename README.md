@@ -49,56 +49,42 @@ If you see `ECONNREFUSED 127.0.0.1:8000`, the backend isn’t running: use the r
 
 To run WebDownloader on an Ubuntu server so every device on your LAN can use it (phones, tablets, other PCs):
 
-1. **Copy the project to the server** (e.g. `/opt/webdownloader`):
+1. **Clone the repo at the latest release** (from `/opt`; requires `git` and `curl`):
    ```bash
-   sudo mkdir -p /opt/webdownloader
-   sudo chown "$USER" /opt/webdownloader
-   # Copy or clone the repo into /opt/webdownloader (git clone … or scp/rsync).
+   cd /opt
+   sudo git clone https://github.com/Meki20/webdownloader.git
+   cd webdownloader
+   TAG=$(curl -sS -H "Accept: application/vnd.github.v3+json" -H "User-Agent: WebDownloader/1.0" "https://api.github.com/repos/Meki20/webdownloader/releases/latest" | grep '"tag_name"' | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')
+   git fetch origin tag "$TAG" && git checkout "$TAG"
    ```
 
-2. **Install and build** (from project root):
+2. **Give yourself ownership, then run the install script**:
    ```bash
-   cd /opt/webdownloader
-   chmod +x deploy/install-ubuntu.sh
-   ./deploy/install-ubuntu.sh
+   sudo chown -R "$USER" /opt/webdownloader
+   chmod +x /opt/webdownloader/deploy/install-ubuntu.sh
+   /opt/webdownloader/deploy/install-ubuntu.sh
    ```
-   This installs system deps (Python, Node, **ffmpeg**), creates the backend venv, and builds the frontend. **ffmpeg** is required for video downloads.
+   The script installs system deps (Python, Node, **ffmpeg**), creates the backend venv, builds the frontend, installs the systemd service, and starts it. **ffmpeg** is required for video downloads.
 
-3. **Install the systemd service**:
+3. **Allow one-click updates from the app** (Settings → Updates). Add a sudoers rule so the service user can run the update script without a password:
    ```bash
-   sudo cp deploy/webdownloader.service /etc/systemd/system/
-   sudo nano /etc/systemd/system/webdownloader.service
+   sudo visudo -f /etc/sudoers.d/webdownloader-update
    ```
-   Set `User`, `Group`, `WorkingDirectory`, `PATH`, and `ExecStart` to your install path (default is `/opt/webdownloader`). Save and exit.
+   Add this line (use your install path if different):
+   ```
+   www-data ALL=(ALL) NOPASSWD: /opt/webdownloader/deploy/update-ubuntu.sh
+   ```
+   Save and exit.
 
-4. **Enable and start**:
+4. **Give the service user ownership of the app** so it can read the git repo (for “Check for updates”) and run the update script:
    ```bash
-   sudo systemctl daemon-reload
-   sudo systemctl enable webdownloader
-   sudo systemctl start webdownloader
-   sudo systemctl status webdownloader
+   sudo chown -R www-data:www-data /opt/webdownloader
+   sudo systemctl restart webdownloader
    ```
 
-5. **Open from any device on your LAN**: **http://YOUR_SERVER_IP:8000** (e.g. `http://192.168.1.10:8000`). The service listens on `0.0.0.0:8000` and serves the built frontend; no separate frontend server or proxy is needed.
+5. **Open from any device on your LAN**: **http://YOUR_SERVER_IP:8000** (e.g. `http://192.168.1.10:8000`). The service listens on `0.0.0.0:8000` and serves the built frontend.
 
-**If the service fails with exit code 203 (EXEC):** systemd could not run the executable. Fix the paths and permissions:
-
-1. **Use the path where the app is actually installed.** The service file uses `/opt/webdownloader` by default. If you installed elsewhere (e.g. `/home/you/WebDownloader`), set that as `APP_ROOT` and run:
-   ```bash
-   APP_ROOT=/path/to/WebDownloader   # your actual install path
-   sudo sed -i "s|/opt/webdownloader|$APP_ROOT|g" /etc/systemd/system/webdownloader.service
-   ```
-2. **Check that the venv and uvicorn exist:**
-   ```bash
-   ls -la "$APP_ROOT/backend/.venv/bin/uvicorn"
-   ```
-   If missing, create the venv and install deps: `cd "$APP_ROOT" && ./deploy/install-ubuntu.sh` (or `cd backend && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`).
-3. **Ensure the service user can run the app.** If using `User=www-data`, give it access:
-   ```bash
-   sudo chown -R www-data:www-data "$APP_ROOT"
-   ```
-   Or for a quick test, set `User=` and `Group=` to your own user in the service file so it runs as you.
-4. Reload and restart: `sudo systemctl daemon-reload && sudo systemctl restart webdownloader`, then `sudo journalctl -u webdownloader -n 30` to see logs.
+**If the service fails with exit code 203 (EXEC):** systemd could not run the executable. Check that the venv exists: `ls -la /opt/webdownloader/backend/.venv/bin/uvicorn`. If missing, run the install script again from the repo root. If you installed elsewhere than `/opt/webdownloader`, edit the service: `sudo nano /etc/systemd/system/webdownloader.service` and fix paths, then `sudo systemctl daemon-reload && sudo systemctl restart webdownloader`. View logs: `sudo journalctl -u webdownloader -n 30`.
 
 ## Running behind nginx
 
@@ -119,17 +105,8 @@ To put WebDownloader behind nginx (e.g. to use port 80/443, HTTPS, or another si
 ### Updates (from GitHub)
 
 - **Manual:** From the project root run `sudo ./deploy/update-ubuntu.sh` to install the latest [GitHub release](https://github.com/Meki20/webdownloader/releases), rebuild the frontend, and restart the service.
-- **From the app (Settings → Updates):** Use "Check for updates" and "Install update" for a one-click update. For that to work, allow the service user to run the update script without a password:
-  ```bash
-  sudo visudo -f /etc/sudoers.d/webdownloader-update
-  ```
-  Add one line (replace `/opt/webdownloader` if you installed elsewhere):
-  ```
-  www-data ALL=(ALL) NOPASSWD: /opt/webdownloader/deploy/update-ubuntu.sh
-  ```
-  Save and exit. The repo must be a git clone (e.g. from [github.com/Meki20/webdownloader](https://github.com/Meki20/webdownloader)). The script fetches the latest release tag from GitHub and checks out that tag; if there are no releases, it falls back to `origin/main`.
-
-- **If "Check for updates" returns 503:** The service user (`www-data`) needs read access to the git repo. Run: `sudo chown -R www-data:www-data /opt/webdownloader` (use your install path). Ensure `git` is installed (`apt install git`).
+- **From the app (Settings → Updates):** Use "Check for updates" and "Install update" for a one-click update. This only works if you completed steps 3 and 4 above (sudoers rule for `www-data` and `chown -R www-data:www-data`). The script fetches the latest release tag from GitHub and checks out that tag; updates are from releases only.
+- **Optional:** Put `GITHUB_TOKEN=ghp_...` in `/opt/webdownloader/.env` so the app and the update script get a higher GitHub API rate limit and avoid 403 errors.
 
 ## SaaS / production deployment
 
