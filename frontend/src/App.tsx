@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import JSZip from 'jszip'
 import { Header } from './components/Header'
 import { Hero } from './components/Hero'
 import { UrlInput } from './components/UrlInput'
@@ -14,6 +15,10 @@ import * as historyLib from './lib/history'
 import { randomUUID } from './lib/utils'
 import { initTheme, getStoredTheme, applyTheme } from './lib/theme'
 import { loadSettings, applyNamingTemplate, type UserSettings } from './lib/settings'
+
+function safeZipEntryName(name: string): string {
+  return name.replace(/[/\\:*?"<>|]/g, '_').slice(0, 200) || 'file'
+}
 
 const API = '/api'
 const MAX_HISTORY = 200
@@ -55,6 +60,9 @@ export default function App() {
   const [versionInfo, setVersionInfo] = useState<{ version: string; tag?: string; name?: string; body?: string; published_at?: string; html_url?: string } | null>(null)
   const queueConcurrency = settings.downloadConcurrency
 
+  const playlistJobBlobsRef = useRef<Record<string, { total: number; title: string; files: Map<number, { blob: Blob; filename: string }> }>>({})
+  const userHasAddedToQueueRef = useRef(false)
+
   useEffect(() => {
     initTheme()
   }, [])
@@ -82,7 +90,19 @@ export default function App() {
       setTheme(themeVal)
       applyTheme(themeVal)
       setHistoryEntries(Array.isArray(apiHistory) ? apiHistory : [])
-      setDownloadQueue(Array.isArray(apiQueue) ? apiQueue : [])
+      const queue = Array.isArray(apiQueue) ? apiQueue : []
+      if (!userHasAddedToQueueRef.current) {
+        setDownloadQueue(queue)
+        queue.forEach((f: FoundFile) => {
+          if (f.playlistJobId != null && f.playlistTotal != null && !playlistJobBlobsRef.current[f.playlistJobId]) {
+            playlistJobBlobsRef.current[f.playlistJobId] = {
+              total: f.playlistTotal,
+              title: 'Playlist',
+              files: new Map(),
+            }
+          }
+        })
+      }
       setDataLoaded(true)
     })
     return () => { cancelled = true }
@@ -396,15 +416,43 @@ export default function App() {
       const blob = new Blob(
         expectProgressStream && fileChunks.length > 0 ? fileChunks : chunks.length > 0 ? chunks : buffer.length > 0 ? [buffer] : []
       )
-      const blobUrl = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = blobUrl
-      a.download = filename && filename !== 'download' ? filename : 'download'
-      a.style.display = 'none'
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(blobUrl)
+      const jobId = file.playlistJobId
+      const isPlaylistJob = jobId != null && file.playlistIndex != null && file.playlistTotal != null
+      if (isPlaylistJob) {
+        const job = playlistJobBlobsRef.current[jobId]
+        if (job) {
+          job.files.set(file.playlistIndex, { blob, filename: filename && filename !== 'download' ? filename : 'download' })
+          if (job.files.size === job.total) {
+            const zip = new JSZip()
+            const sorted = Array.from(job.files.entries()).sort((a, b) => a[0] - b[0])
+            for (const [, { blob: b, filename: fn }] of sorted) {
+              zip.file(safeZipEntryName(fn), b)
+            }
+            zip.generateAsync({ type: 'blob' }).then((zipBlob) => {
+              const url = URL.createObjectURL(zipBlob)
+              const a = document.createElement('a')
+              a.href = url
+              a.download = safeZipEntryName(job.title) + '.zip'
+              a.style.display = 'none'
+              document.body.appendChild(a)
+              a.click()
+              document.body.removeChild(a)
+              URL.revokeObjectURL(url)
+            })
+            delete playlistJobBlobsRef.current[jobId]
+          }
+        }
+      } else {
+        const blobUrl = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = blobUrl
+        a.download = filename && filename !== 'download' ? filename : 'download'
+        a.style.display = 'none'
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(blobUrl)
+      }
     } catch (e) {
       setDownloadError(e instanceof Error ? e.message : 'Download failed')
     } finally {
@@ -419,9 +467,39 @@ export default function App() {
   }
 
   function addToQueue(file: FoundFile) {
+    userHasAddedToQueueRef.current = true
     setDownloadQueue((prev) => {
       if (prev.some((f) => f.id === file.id)) return prev
       const next = [...prev, file]
+      saveQueueToApi(next)
+      return next
+    })
+  }
+
+  function addPlaylistToQueue(
+    items: FoundFile[],
+    options: { format: string; qualityIndex: number; playlistTitle: string }
+  ) {
+    userHasAddedToQueueRef.current = true
+    const { format, qualityIndex, playlistTitle } = options
+    const jobId = items[0]?.playlistJobId
+    if (jobId != null && items[0]?.playlistTotal != null) {
+      playlistJobBlobsRef.current[jobId] = {
+        total: items[0].playlistTotal,
+        title: playlistTitle,
+        files: new Map(),
+      }
+    }
+    setSelectedFormat((prev) => ({
+      ...prev,
+      ...Object.fromEntries(items.map((f) => [f.id, format])),
+    }))
+    setSelectedQuality((prev) => ({
+      ...prev,
+      ...Object.fromEntries(items.map((f) => [f.id, qualityIndex])),
+    }))
+    setDownloadQueue((prev) => {
+      const next = [...prev, ...items]
       saveQueueToApi(next)
       return next
     })
@@ -500,7 +578,10 @@ export default function App() {
               suggestDownloadFilename={suggestDownloadFilename}
               downloadButtonLabel={downloadButtonLabel}
               onDownload={addToQueue}
+              onAddPlaylistToQueue={addPlaylistToQueue}
+              onSwitchToQueue={() => handleTabChange('queue')}
               defaultQualityIndex={settings.defaultQualityIndex}
+              defaultFormats={settings.defaultFormats}
             />
         )}
         {activeTab === 'queue' && (

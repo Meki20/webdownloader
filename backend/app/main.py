@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
+import zipfile
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -22,7 +23,7 @@ from fastapi.responses import RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import CORS_ORIGINS
-from app.crawler import crawl_url
+from app.crawler import crawl_url, extract_playlist_entries, is_youtube_playlist_url
 from app.middleware import APIKeyMiddleware, RateLimitMiddleware
 
 _executor = ThreadPoolExecutor(max_workers=4)
@@ -748,7 +749,53 @@ def _run_ytdlp_to_queue(
                 pass
         return
 
-    # Audio or non-merge: stream to stdout (original path)
+    # Audio: download to temp file then stream (yt-dlp does not apply -x when -o "-" is used).
+    if media_type == "audio":
+        audio_fmt = (output_format or "mp3").strip().lower() or "mp3"
+        if audio_fmt not in ("mp3", "m4a", "aac", "ogg", "wav", "flac", "opus"):
+            audio_fmt = "mp3"
+        temp_dir = tempfile.mkdtemp()
+        out_tpl = os.path.join(temp_dir, "audio.%(ext)s")
+        try:
+            chunk_queue.put({"progress": {"phase": "downloading"}})
+            args = [
+                sys.executable, "-m", "yt_dlp", "-o", out_tpl,
+                "-x", "--audio-format", audio_fmt,
+                "-f", "bestaudio/best",
+                "--no-part", "--no-warnings", "--quiet",
+                "--no-playlist",
+                page_url,
+            ]
+            proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            proc.wait(timeout=600)
+            if proc.returncode != 0:
+                chunk_queue.put(None)
+                return
+            # yt-dlp may write audio.opus, audio.m4a, etc.
+            candidates = list(Path(temp_dir).glob("audio.*"))
+            out_file = candidates[0] if len(candidates) == 1 else None
+            if out_file is None or not (out_file.is_file() and out_file.stat().st_size > 0):
+                chunk_queue.put(None)
+                return
+            file_size = out_file.stat().st_size
+            chunk_queue.put({"progress": {"phase": "streaming", "size": file_size}})
+            with open(out_file, "rb") as f:
+                while True:
+                    chunk = f.read(_STREAM_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    chunk_queue.put(chunk)
+        finally:
+            chunk_queue.put(None)
+            try:
+                for p in Path(temp_dir).iterdir():
+                    p.unlink(missing_ok=True)
+                Path(temp_dir).rmdir()
+            except Exception:
+                pass
+        return
+
+    # Video (non-merge) or other: stream to stdout
     args = [
         sys.executable, "-m", "yt_dlp", "-o", "-", "-f", format_str,
         "--no-part", "--no-warnings", "--quiet",
@@ -757,11 +804,6 @@ def _run_ytdlp_to_queue(
     ]
     if media_type == "video":
         args.extend(["--merge-output-format", "mp4/mkv", "--downloader", "ffmpeg"])
-    if media_type == "audio":
-        audio_fmt = (output_format or "mp3").strip().lower() or "mp3"
-        if audio_fmt not in ("mp3", "m4a", "aac", "ogg", "wav", "flac", "opus"):
-            audio_fmt = "mp3"
-        args.extend(["-x", "--audio-format", audio_fmt])
     args.append(page_url)
 
     proc_ydl = subprocess.Popen(
@@ -900,9 +942,175 @@ def _safe_filename(name: str, max_len: int = 200) -> str:
     return name
 
 
+_PLAYLIST_ZIP_MAX_ENTRIES = 100
+_PLAYLIST_DOWNLOAD_TIMEOUT_PER_ITEM = 420  # 7 min per video
+
+
+def _build_playlist_zip_sync(
+    playlist_url: str,
+    media_type: str,
+    output_format: str | None,
+) -> tuple[str | None, str | None, str | None]:
+    """Download each playlist item and zip. Returns (zip_path, zip_filename, temp_dir) or (None, None, None) on failure."""
+    entries, playlist_title = extract_playlist_entries(playlist_url, max_entries=_PLAYLIST_ZIP_MAX_ENTRIES)
+    if not entries:
+        return (None, None, None)
+    temp_dir = tempfile.mkdtemp()
+    try:
+        out_format = (output_format or "").strip().lower()
+        if media_type == "video":
+            out_format = out_format or "mp4"
+            if out_format not in ("mp4", "mkv", "webm", "avi", "flv"):
+                out_format = "mp4"
+        elif media_type == "audio":
+            out_format = out_format or "mp3"
+            if out_format not in ("mp3", "m4a", "aac", "ogg", "wav", "flac", "opus"):
+                out_format = "mp3"
+        elif media_type == "image":
+            out_format = out_format or "jpg"
+
+        for i, entry in enumerate(entries):
+            video_url = entry.get("url") or ""
+            if not video_url.startswith("http"):
+                continue
+            title = _safe_filename(entry.get("title") or "item", max_len=150)
+            out_tpl = os.path.join(temp_dir, f"{i + 1:03d} - {title}.%(ext)s")
+
+            if media_type == "video":
+                args = [
+                    sys.executable, "-m", "yt_dlp", "-o", out_tpl,
+                    "-f", "bestvideo+bestaudio/best",
+                    "--merge-output-format", "mp4/mkv",
+                    "--no-part", "--no-warnings", "--quiet",
+                    "--restrict-filenames",
+                    "--concurrent-fragments", "8",
+                    "-S", "res,vcodec:h264,acodec:aac",
+                    "--check-formats",
+                    video_url,
+                ]
+            elif media_type == "audio":
+                args = [
+                    sys.executable, "-m", "yt_dlp", "-o", out_tpl,
+                    "-x", "--audio-format", out_format,
+                    "--no-part", "--no-warnings", "--quiet",
+                    "--restrict-filenames",
+                    video_url,
+                ]
+            else:
+                # image: thumbnails only
+                args = [
+                    sys.executable, "-m", "yt_dlp", "-o", out_tpl,
+                    "--write-thumbnail", "--skip-download",
+                    "--no-warnings", "--quiet",
+                    "--restrict-filenames",
+                    "--convert-subs", "no",
+                    video_url,
+                ]
+            proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            proc.wait(timeout=_PLAYLIST_DOWNLOAD_TIMEOUT_PER_ITEM)
+            if proc.returncode != 0:
+                _log.warning("Playlist item %s failed: %s", i + 1, video_url[:80])
+
+        # Build zip of all downloaded files (not subdirs)
+        zip_name = _safe_filename(playlist_title, max_len=120) + ".zip"
+        zip_path = os.path.join(temp_dir, zip_name)
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for f in Path(temp_dir).iterdir():
+                if f.is_file() and f.suffix.lower() == ".zip" and f.name == zip_name:
+                    continue
+                if f.is_file():
+                    zf.write(f, f.name)
+        return (zip_path, zip_name, temp_dir)
+    except Exception as e:
+        _log.exception("Playlist zip build failed: %s", e)
+        try:
+            for p in Path(temp_dir).iterdir():
+                p.unlink(missing_ok=True)
+            Path(temp_dir).rmdir()
+        except Exception:
+            pass
+        return (None, None, None)
+
+
+def _stream_playlist_zip(zip_path: str, temp_dir: str):
+    """Yield chunks from zip file, then clean up temp_dir."""
+    try:
+        with open(zip_path, "rb") as f:
+            while True:
+                chunk = f.read(_STREAM_CHUNK_SIZE)
+                if not chunk:
+                    break
+                yield chunk
+    finally:
+        try:
+            for p in Path(temp_dir).iterdir():
+                p.unlink(missing_ok=True)
+            Path(temp_dir).rmdir()
+        except Exception:
+            pass
+
+
 def _ascii_fallback(name: str) -> str:
     """Return ASCII-only version for Content-Disposition fallback (latin-1 safe)."""
     return name.encode("ascii", "replace").decode("ascii") or "download"
+
+
+@app.get("/api/playlist-entries")
+async def get_playlist_entries(url: str):
+    """Return playlist entries (id, title, url, thumbnail) and playlist title for a YouTube playlist URL."""
+    if not url or not url.startswith("http"):
+        raise HTTPException(status_code=400, detail="Invalid URL")
+    if not is_youtube_playlist_url(url):
+        raise HTTPException(status_code=400, detail="URL is not a YouTube playlist")
+    entries, playlist_title = extract_playlist_entries(url, max_entries=_PLAYLIST_ZIP_MAX_ENTRIES)
+    return {"entries": entries, "title": playlist_title}
+
+
+@app.get("/api/playlist-zip")
+async def download_playlist_as_zip(
+    request: Request,
+    url: str,
+    media_type: str,
+    output_format: str | None = None,
+):
+    """Download entire YouTube playlist as a ZIP (videos, audio, or images/thumbnails)."""
+    from urllib.parse import quote
+    if not url or not url.startswith("http"):
+        raise HTTPException(status_code=400, detail="Invalid URL")
+    if not is_youtube_playlist_url(url):
+        raise HTTPException(status_code=400, detail="URL is not a YouTube playlist")
+    mt = (media_type or "").strip().lower()
+    if mt not in ("video", "audio", "image"):
+        raise HTTPException(status_code=400, detail="media_type must be video, audio, or image")
+    loop = asyncio.get_event_loop()
+    zip_path, zip_filename, temp_dir = await loop.run_in_executor(
+        _executor,
+        _build_playlist_zip_sync,
+        url,
+        mt,
+        output_format,
+    )
+    if not zip_path or not temp_dir:
+        raise HTTPException(status_code=502, detail="Playlist download or zip failed")
+    headers = {}
+    if zip_filename:
+        safe = _safe_filename(zip_filename)
+        try:
+            ascii_only = _ascii_fallback(safe)
+            if ascii_only == safe:
+                headers["Content-Disposition"] = f'attachment; filename="{safe}"'
+            else:
+                encoded = quote(safe, safe="")
+                headers["Content-Disposition"] = (
+                    f"attachment; filename=\"{ascii_only}\"; filename*=UTF-8''{encoded}"
+                )
+        except Exception:
+            headers["Content-Disposition"] = f'attachment; filename="{_ascii_fallback(safe)}"'
+    return StreamingResponse(
+        _stream_playlist_zip(zip_path, temp_dir),
+        media_type="application/zip",
+        headers=headers,
+    )
 
 
 @app.get("/api/download")

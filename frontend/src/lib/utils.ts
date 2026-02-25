@@ -24,3 +24,11 @@ export function truncateLink(url: string, maxLen: number = TRUNCATE_MAX): string
   const tail = maxLen - head - 1
   return url.slice(0, head) + '…' + url.slice(-tail)
 }
+
+/** True if URL is a YouTube playlist (has list= or /playlist?list=). */
+export function isYoutubePlaylistUrl(url: string): boolean {
+  if (typeof url !== 'string' || !url.trim()) return false
+  const lower = url.trim().toLowerCase()
+  if (!lower.includes('youtube.com') && !lower.includes('youtu.be')) return false
+  return lower.includes('list=')
+}

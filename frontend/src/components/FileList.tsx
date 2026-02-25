@@ -1,7 +1,9 @@
 import { useState, useMemo } from 'react'
 import type { FoundFile } from '../types'
 import { OUTPUT_FORMATS } from '../constants'
-import { truncateLink } from '../lib/utils'
+import { truncateLink, isYoutubePlaylistUrl, randomUUID } from '../lib/utils'
+
+const API = '/api'
 
 type SortKey = 'recent' | 'type' | 'title'
 
@@ -19,10 +21,20 @@ type Props = {
   suggestDownloadFilename: (file: FoundFile) => string
   downloadButtonLabel: (fileId: string) => string
   onDownload: (file: FoundFile) => void
+  onAddPlaylistToQueue?: (items: FoundFile[], options: { format: string; qualityIndex: number; playlistTitle: string }) => void
+  onSwitchToQueue?: () => void
   defaultQualityIndex?: number
+  defaultFormats?: { video?: string; audio?: string; image?: string }
 }
 
 const typeOrder = { video: 0, audio: 1, image: 2 }
+
+const VIDEO_QUALITIES: { url: string; label: string }[] = [
+  { url: '', label: 'Best' },
+  { url: '', label: '720p' },
+  { url: '', label: '480p' },
+  { url: '', label: '360p' },
+]
 
 const styles: Record<string, React.CSSProperties> = {
   section: { maxWidth: 720, margin: '0 auto', width: '100%', boxSizing: 'border-box' },
@@ -212,6 +224,32 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--text-muted)',
     marginTop: 4,
   },
+  playlistZipBar: {
+    padding: '12px 20px',
+    background: 'var(--bg-elevated)',
+    borderBottom: '1px solid var(--border)',
+    display: 'flex',
+    alignItems: 'center',
+    gap: 12,
+    flexWrap: 'wrap',
+  },
+  playlistZipLabel: {
+    fontSize: 13,
+    color: 'var(--text-muted)',
+    flexShrink: 0,
+  },
+  playlistZipBtns: { display: 'flex', gap: 8, flexWrap: 'wrap' },
+  playlistZipBtn: {
+    padding: '8px 14px',
+    fontSize: 13,
+    fontWeight: 500,
+    background: 'var(--card-bg)',
+    border: '1px solid var(--border)',
+    borderRadius: 'var(--radius)',
+    color: 'var(--accent)',
+    cursor: 'pointer',
+  },
+  playlistZipBtnLoading: { opacity: 0.8, cursor: 'wait' as const },
 }
 
 function typeColor(t: string): string {
@@ -233,11 +271,83 @@ export function FileList(props: Props) {
     getOutputFormat,
     downloadButtonLabel,
     onDownload,
+    onAddPlaylistToQueue,
+    onSwitchToQueue,
     defaultQualityIndex = 0,
+    defaultFormats = {},
   } = props
   const [sortBy, setSortBy] = useState<SortKey>('recent')
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
   const [thumbFail, setThumbFail] = useState<Record<string, boolean>>({})
+  const [playlistBar, setPlaylistBar] = useState<{
+    mediaType: 'video' | 'audio' | 'image'
+    format: string
+    qualityIndex: number
+  }>(() => ({
+    mediaType: 'video',
+    format: defaultFormats.video ?? 'mp4',
+    qualityIndex: 0,
+  }))
+  const [playlistAddLoading, setPlaylistAddLoading] = useState<string | null>(null)
+  const [playlistAddError, setPlaylistAddError] = useState<string | null>(null)
+
+  async function addPlaylistToQueue(crawlUrl: string) {
+    if (!onAddPlaylistToQueue) return
+    setPlaylistAddLoading(crawlUrl)
+    setPlaylistAddError(null)
+    try {
+      const res = await fetch(`${API}/playlist-entries?url=${encodeURIComponent(crawlUrl)}`)
+      if (!res.ok) {
+        const errBody = await res.text()
+        const msg = errBody ? (errBody.slice(0, 120) + (errBody.length > 120 ? '…' : '')) : res.statusText
+        throw new Error(msg || 'Failed to load playlist')
+      }
+      const data = await res.json() as { entries: { id: string; title: string; url: string; thumbnail?: string }[]; title: string }
+      const { entries, title: playlistTitle } = data
+      if (!entries?.length) throw new Error('No entries in playlist')
+      const jobId = randomUUID()
+      const total = entries.length
+      const { mediaType, format, qualityIndex } = playlistBar
+      const qualities = mediaType === 'video' ? VIDEO_QUALITIES : [{ url: '', label: 'Best' }]
+      const items: FoundFile[] = entries.map((entry, i) => {
+        if (mediaType === 'image' && entry.thumbnail) {
+          return {
+            id: randomUUID(),
+            url: entry.thumbnail,
+            title: entry.title,
+            type: 'image',
+            thumbnail: entry.thumbnail,
+            source: 'html',
+            crawlUrl: entry.thumbnail,
+            qualities: [{ url: entry.thumbnail, label: 'default' }],
+            playlistJobId: jobId,
+            playlistIndex: i,
+            playlistTotal: total,
+          }
+        }
+        return {
+          id: randomUUID(),
+          url: entry.url,
+          title: entry.title,
+          type: mediaType,
+          thumbnail: entry.thumbnail || '',
+          source: 'yt-dlp',
+          crawlUrl: entry.url,
+          qualities,
+          playlistJobId: jobId,
+          playlistIndex: i,
+          playlistTotal: total,
+        }
+      })
+      onAddPlaylistToQueue(items, { format, qualityIndex, playlistTitle })
+      onSwitchToQueue?.()
+    } catch (e) {
+      setPlaylistAddError(e instanceof Error ? e.message : 'Failed to add playlist to queue')
+      console.error('Add playlist to queue failed', e)
+    } finally {
+      setPlaylistAddLoading(null)
+    }
+  }
 
   const grouped = useMemo(() => {
     const byKey: Record<string, FoundFile[]> = {}
@@ -328,6 +438,65 @@ export function FileList(props: Props) {
               </button>
               {!isCollapsed && (
                 <div style={styles.groupBody}>
+                  {key !== 'other' && isYoutubePlaylistUrl(key) && onAddPlaylistToQueue && (
+                    <div style={styles.playlistZipBar}>
+                      {playlistAddError && (
+                        <span style={{ ...styles.error, flex: '1 1 100%', marginBottom: 4 }}>{playlistAddError}</span>
+                      )}
+                      <span style={styles.playlistZipLabel}>Download entire playlist:</span>
+                      <select
+                        style={styles.select}
+                        value={playlistBar.mediaType}
+                        onChange={(e) => {
+                          const t = e.target.value as 'video' | 'audio' | 'image'
+                          setPlaylistBar((prev) => ({
+                            ...prev,
+                            mediaType: t,
+                            format: defaultFormats[t] ?? (t === 'video' ? 'mp4' : t === 'audio' ? 'mp3' : 'png'),
+                          }))
+                        }}
+                        aria-label="Media type"
+                      >
+                        <option value="video">Videos</option>
+                        <option value="audio">Audio</option>
+                        <option value="image">Images (thumbnails)</option>
+                      </select>
+                      {OUTPUT_FORMATS[playlistBar.mediaType] && (
+                        <select
+                          style={styles.select}
+                          value={playlistBar.format}
+                          onChange={(e) => setPlaylistBar((prev) => ({ ...prev, format: e.target.value }))}
+                          aria-label="Format"
+                        >
+                          {OUTPUT_FORMATS[playlistBar.mediaType].map((opt) => (
+                            <option key={opt.value} value={opt.value}>{opt.label}</option>
+                          ))}
+                        </select>
+                      )}
+                      {playlistBar.mediaType === 'video' && (
+                        <select
+                          style={styles.select}
+                          value={playlistBar.qualityIndex}
+                          onChange={(e) => setPlaylistBar((prev) => ({ ...prev, qualityIndex: Number(e.target.value) }))}
+                          aria-label="Quality"
+                        >
+                          {VIDEO_QUALITIES.map((q, i) => (
+                            <option key={i} value={i}>{q.label}</option>
+                          ))}
+                        </select>
+                      )}
+                      <button
+                        type="button"
+                        style={{ ...styles.playlistZipBtn, ...(playlistAddLoading === key ? styles.playlistZipBtnLoading : {}) }}
+                        onClick={() => addPlaylistToQueue(key)}
+                        disabled={playlistAddLoading !== null}
+                        aria-busy={playlistAddLoading === key}
+                      >
+                        {playlistAddLoading === key ? <><i className="fa-solid fa-circle-notch fa-spin" aria-hidden /> </> : null}
+                        Add entire playlist to queue
+                      </button>
+                    </div>
+                  )}
                   <ul style={styles.list}>
                     {groupFiles.map((f, i) => (
                       <li

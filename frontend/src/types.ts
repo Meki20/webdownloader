@@ -18,6 +18,10 @@ export type FoundFile = {
   crawlId?: string
   crawlUrl?: string
   qualities?: Quality[]
+  /** When set, this item is part of a playlist zip job; on completion blob is collected and zip built when job is complete */
+  playlistJobId?: string
+  playlistIndex?: number
+  playlistTotal?: number
 }
 
 export type HistoryEntry = {

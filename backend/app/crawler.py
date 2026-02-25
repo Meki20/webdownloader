@@ -1,12 +1,66 @@
 """Extract media (video, audio, images) from URLs using yt-dlp and generic HTML parsing."""
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Any
 
 import httpx
 import yt_dlp
 from bs4 import BeautifulSoup
+
+
+def is_youtube_playlist_url(url: str) -> bool:
+    """Return True if URL is a YouTube playlist (has list= or /playlist?list=)."""
+    if not url or not isinstance(url, str):
+        return False
+    url_lower = url.strip().lower()
+    if "youtube.com" not in url_lower and "youtu.be" not in url_lower:
+        return False
+    if "list=" in url_lower:
+        return True
+    if "/playlist" in url_lower and "list=" in url_lower:
+        return True
+    return False
+
+
+def extract_playlist_entries(url: str, max_entries: int = 100) -> tuple[list[dict[str, Any]], str]:
+    """Extract playlist video entries (id, title, url) and playlist title from a YouTube playlist URL.
+    Returns (entries, playlist_title). Entries limited to max_entries."""
+    if not is_youtube_playlist_url(url):
+        return ([], "Playlist")
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": "in_playlist",
+        "skip_download": True,
+        "http_headers": _YTDLP_HEADERS,
+        "noplaylist": False,
+    }
+    entries_out: list[dict[str, Any]] = []
+    playlist_title = "Playlist"
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if not info:
+                return (entries_out, playlist_title)
+            raw = ydl.sanitize_info(info) or {}
+            playlist_title = (raw.get("title") or "Playlist").strip()
+            for entry in raw.get("entries") or []:
+                if not entry or len(entries_out) >= max_entries:
+                    break
+                eid = entry.get("id")
+                if not eid:
+                    continue
+                title = (entry.get("title") or "Video").strip()
+                video_url = entry.get("url") or f"https://www.youtube.com/watch?v={eid}"
+                if not video_url.startswith("http"):
+                    video_url = f"https://www.youtube.com/watch?v={eid}"
+                thumb = entry.get("thumbnail") or f"https://img.youtube.com/vi/{eid}/mqdefault.jpg"
+                entries_out.append({"id": eid, "title": title, "url": video_url, "thumbnail": thumb})
+    except Exception:
+        pass
+    return (entries_out, playlist_title)
 
 # Media extensions we consider as downloadable
 MEDIA_EXTENSIONS = {
