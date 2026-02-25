@@ -322,16 +322,16 @@ export default function App() {
       let totalNum = totalHeader ? parseInt(totalHeader, 10) : 0
       if (!res.body) throw new Error('No response body')
       const reader = res.body.getReader()
-      const chunks: Uint8Array[] = []
-      let buffer = new Uint8Array(0)
+      const chunks: Uint8Array<ArrayBufferLike>[] = []
+      let buffer: Uint8Array<ArrayBufferLike> = new Uint8Array(0)
       let fileSizeFromStream: number | null = null
-      const fileChunks: Uint8Array[] = []
+      const fileChunks: Uint8Array<ArrayBufferLike>[] = []
       let fileReceived = 0
       let lastPct = -1
       let lastBytesReport = 0
       const decoder = new TextDecoder('utf-8')
 
-      function processStreamingChunk(data: Uint8Array): Uint8Array {
+      function processStreamingChunk(data: Uint8Array<ArrayBufferLike>): Uint8Array<ArrayBufferLike> {
         if (fileSizeFromStream == null || fileSizeFromStream <= 0) return data
         const rem = fileSizeFromStream - fileReceived
         const take = Math.min(rem, data.length)
@@ -413,15 +413,15 @@ export default function App() {
         const rem = fileSizeFromStream - fileReceived
         if (rem > 0) fileChunks.push(buffer.slice(0, Math.min(rem, buffer.length)))
       }
-      const blob = new Blob(
+      const blobParts =
         expectProgressStream && fileChunks.length > 0 ? fileChunks : chunks.length > 0 ? chunks : buffer.length > 0 ? [buffer] : []
-      )
+      const blob = new Blob(blobParts as BlobPart[])
       const jobId = file.playlistJobId
       const isPlaylistJob = jobId != null && file.playlistIndex != null && file.playlistTotal != null
       if (isPlaylistJob) {
         const job = playlistJobBlobsRef.current[jobId]
         if (job) {
-          job.files.set(file.playlistIndex, { blob, filename: filename && filename !== 'download' ? filename : 'download' })
+          job.files.set(file.playlistIndex!, { blob, filename: filename && filename !== 'download' ? filename : 'download' })
           if (job.files.size === job.total) {
             const zip = new JSZip()
             const sorted = Array.from(job.files.entries()).sort((a, b) => a[0] - b[0])
