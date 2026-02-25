@@ -351,7 +351,7 @@ def _updates_install_sync() -> str | None:
         return "Update script not found (deploy/update-ubuntu.sh). Run updates manually on the server."
     try:
         result = sp.run(
-            ["sudo", str(script)],
+            ["sudo", "bash", str(script)],
             capture_output=True,
             text=True,
             timeout=300,

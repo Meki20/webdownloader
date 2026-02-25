@@ -3,7 +3,7 @@
 # Run from project root or with full path: sudo ./deploy/update-ubuntu.sh
 # For one-click update from the app UI, allow www-data to run this without password:
 #   sudo visudo -f /etc/sudoers.d/webdownloader-update
-#   www-data ALL=(ALL) NOPASSWD: /opt/webdownloader/deploy/update-ubuntu.sh
+#   www-data ALL=(ALL) NOPASSWD: /usr/bin/bash /opt/webdownloader/deploy/update-ubuntu.sh
 set -e
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 cd "$ROOT"

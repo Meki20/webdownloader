@@ -66,13 +66,13 @@ To run WebDownloader on an Ubuntu server so every device on your LAN can use it 
    ```
    The script installs system deps (Python, Node, **ffmpeg**), creates the backend venv, builds the frontend, installs the systemd service, and starts it. **ffmpeg** is required for video downloads.
 
-3. **Allow one-click updates from the app** (Settings → Updates). Add a sudoers rule so the service user can run the update script without a password:
+3. **Allow one-click updates from the app** (Settings → Updates). Add a sudoers rule so the service user can run the update script without a password (using `bash` so the script runs consistently):
    ```bash
    sudo visudo -f /etc/sudoers.d/webdownloader-update
    ```
    Add this line (use your install path if different):
    ```
-   www-data ALL=(ALL) NOPASSWD: /opt/webdownloader/deploy/update-ubuntu.sh
+   www-data ALL=(ALL) NOPASSWD: /usr/bin/bash /opt/webdownloader/deploy/update-ubuntu.sh
    ```
    Save and exit.
 
@@ -104,7 +104,7 @@ To put WebDownloader behind nginx (e.g. to use port 80/443, HTTPS, or another si
 
 ### Updates (from GitHub)
 
-- **Manual:** From the project root run `sudo ./deploy/update-ubuntu.sh` to install the latest [GitHub release](https://github.com/Meki20/webdownloader/releases), rebuild the frontend, and restart the service.
+- **Manual:** From the project root run `sudo bash deploy/update-ubuntu.sh` (or `sudo bash /opt/webdownloader/deploy/update-ubuntu.sh`) to install the latest [GitHub release](https://github.com/Meki20/webdownloader/releases), rebuild the frontend, and restart the service.
 - **From the app (Settings → Updates):** Use "Check for updates" and "Install update" for a one-click update. This only works if you completed steps 3 and 4 above (sudoers rule for `www-data` and `chown -R www-data:www-data`). The script fetches the latest release tag from GitHub and checks out that tag; updates are from releases only.
 - **Optional:** Put `GITHUB_TOKEN=ghp_...` in `/opt/webdownloader/.env` so the app and the update script get a higher GitHub API rate limit and avoid 403 errors.
 
