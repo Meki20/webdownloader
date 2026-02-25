@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -14,7 +16,7 @@ from pathlib import Path
 from queue import Queue
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -29,9 +31,129 @@ _executor = ThreadPoolExecutor(max_workers=4)
 crawls: dict[str, dict] = {}
 found_files: dict[str, list] = {}  # crawl_id -> list of file dicts
 
+# Per-client-IP storage (settings, history, download queue)
+_settings_store: dict[str, dict] = {}
+_history_store: dict[str, list] = {}
+_queue_store: dict[str, list] = {}
+
+# Persistent per-IP data: data/{history|settings|queue}/{sanitized_ip}.json
+_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+_HISTORY_DIR = _DATA_DIR / "history"
+_SETTINGS_DIR = _DATA_DIR / "settings"
+_QUEUE_DIR = _DATA_DIR / "queue"
+_MAX_HISTORY_ENTRIES = 200
+
+
+def _history_key(ip: str) -> str:
+    """Consistent key for history store and filename (sanitized IP)."""
+    s = re.sub(r"[^a-zA-Z0-9._-]", "_", ip)
+    return s[:64] if len(s) > 64 else s
+
+
+def _safe_ip_filename(ip: str) -> str:
+    return _history_key(ip) + ".json"
+
+
+def _load_history_from_disk() -> None:
+    """Load all per-IP history files into _history_store."""
+    if not _HISTORY_DIR.is_dir():
+        return
+    for path in _HISTORY_DIR.glob("*.json"):
+        try:
+            raw = path.read_text(encoding="utf-8")
+            data = json.loads(raw)
+            if isinstance(data, list):
+                _history_store[path.stem] = data[: _MAX_HISTORY_ENTRIES]
+        except Exception:
+            pass
+
+
+def _load_settings_from_disk() -> None:
+    """Load all per-IP settings files into _settings_store."""
+    if not _SETTINGS_DIR.is_dir():
+        return
+    for path in _SETTINGS_DIR.glob("*.json"):
+        try:
+            raw = path.read_text(encoding="utf-8")
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                _settings_store[path.stem] = data
+        except Exception:
+            pass
+
+
+def _load_queue_from_disk() -> None:
+    """Load all per-IP queue files into _queue_store."""
+    if not _QUEUE_DIR.is_dir():
+        return
+    for path in _QUEUE_DIR.glob("*.json"):
+        try:
+            raw = path.read_text(encoding="utf-8")
+            data = json.loads(raw)
+            if isinstance(data, list):
+                _queue_store[path.stem] = data
+        except Exception:
+            pass
+
+
+_log = logging.getLogger(__name__)
+
+
+def _save_history_for_ip(ip: str, entries: list) -> None:
+    """Persist history for this IP to disk."""
+    _HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    path = _HISTORY_DIR / _safe_ip_filename(ip)
+    try:
+        path.write_text(json.dumps(entries, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        _log.warning("Failed to save history for %s: %s", ip, e)
+
+
+def _save_settings_for_ip(ip: str, data: dict) -> None:
+    """Persist settings for this IP to disk."""
+    _SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
+    path = _SETTINGS_DIR / _safe_ip_filename(ip)
+    try:
+        path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        _log.warning("Failed to save settings for %s: %s", ip, e)
+
+
+def _save_queue_for_ip(ip: str, entries: list) -> None:
+    """Persist queue for this IP to disk."""
+    _QUEUE_DIR.mkdir(parents=True, exist_ok=True)
+    path = _QUEUE_DIR / _safe_ip_filename(ip)
+    try:
+        path.write_text(json.dumps(entries, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        _log.warning("Failed to save queue for %s: %s", ip, e)
+
+
+def _client_ip(request: Request) -> str:
+    """Client IP for per-user storage. Prefer proxy headers so behind nginx we get the real client."""
+    host = request.client.host if request.client else ""
+    # When behind nginx/proxy, connection is from 127.0.0.1 — use headers instead
+    forwarded = request.headers.get("x-forwarded-for", "").strip()
+    if forwarded:
+        # Use rightmost (direct client of our proxy); fallback to first
+        parts = [p.strip() for p in forwarded.split(",") if p.strip()]
+        if parts:
+            return parts[-1]
+    real_ip = request.headers.get("x-real-ip", "").strip()
+    if real_ip:
+        return real_ip
+    return host or "unknown"
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _DATA_DIR.mkdir(parents=True, exist_ok=True)
+    _HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    _SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
+    _QUEUE_DIR.mkdir(parents=True, exist_ok=True)
+    _load_history_from_disk()
+    _load_settings_from_disk()
+    _load_queue_from_disk()
     yield
     pass
 
@@ -163,8 +285,9 @@ def _run_crawl_sync(crawl_id: str, url: str) -> None:
 
 
 @app.post("/api/crawls")
-async def start_crawl(url: str):
+async def start_crawl(request: Request, url: str):
     """Start a new crawl for the given URL."""
+    ip = _client_ip(request)
     crawl_id = str(uuid.uuid4())
     crawls[crawl_id] = {
         "id": crawl_id,
@@ -172,6 +295,7 @@ async def start_crawl(url: str):
         "status": "running",
         "fileCount": 0,
         "error": None,
+        "ip": ip,
     }
     found_files[crawl_id] = []
     loop = asyncio.get_event_loop()
@@ -179,37 +303,170 @@ async def start_crawl(url: str):
     return crawls[crawl_id]
 
 
+def _crawls_for_ip(ip: str) -> list[dict]:
+    return [c for c in crawls.values() if c.get("ip") == ip]
+
+
 @app.get("/api/crawls")
-async def list_crawls():
-    """List all crawls."""
-    return list(crawls.values())
+async def list_crawls(request: Request):
+    """List all crawls for this client IP."""
+    return _crawls_for_ip(_client_ip(request))
 
 
 @app.get("/api/crawls/{crawl_id}")
-async def get_crawl(crawl_id: str):
-    """Get one crawl by ID."""
+async def get_crawl(request: Request, crawl_id: str):
+    """Get one crawl by ID (must belong to this client IP)."""
     if crawl_id not in crawls:
+        raise HTTPException(status_code=404, detail="Crawl not found")
+    if crawls[crawl_id].get("ip") != _client_ip(request):
         raise HTTPException(status_code=404, detail="Crawl not found")
     return crawls[crawl_id]
 
 
 @app.get("/api/crawls/{crawl_id}/files")
-async def get_crawl_files(crawl_id: str):
-    """Get all found files for a crawl."""
+async def get_crawl_files(request: Request, crawl_id: str):
+    """Get all found files for a crawl (must belong to this client IP)."""
     if crawl_id not in crawls:
+        raise HTTPException(status_code=404, detail="Crawl not found")
+    if crawls[crawl_id].get("ip") != _client_ip(request):
         raise HTTPException(status_code=404, detail="Crawl not found")
     return found_files.get(crawl_id, [])
 
 
 @app.get("/api/files")
-async def get_all_found_files():
-    """Get all found files across all crawls (for the "Found files" tab)."""
+async def get_all_found_files(request: Request):
+    """Get all found files across this client IP's crawls."""
+    ip = _client_ip(request)
     out = []
     for cid, files in found_files.items():
         c = crawls.get(cid, {})
+        if c.get("ip") != ip:
+            continue
         for f in files:
             out.append({**f, "crawlId": cid, "crawlUrl": c.get("url", "")})
     return out
+
+
+# --- Per-IP settings, history, queue ---
+
+_SETTINGS_DEFAULTS = {
+    "defaultFormats": {"video": "mp4", "audio": "mp3", "image": "png"},
+    "defaultQualityIndex": 0,
+    "namingTemplate": "%name%",
+    "downloadConcurrency": 3,
+    "theme": "system",
+}
+
+
+def _ensure_settings_loaded(key: str, ip: str) -> None:
+    """Load settings from disk if not in memory (e.g. after restart)."""
+    if key in _settings_store:
+        return
+    path = _SETTINGS_DIR / _safe_ip_filename(ip)
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                _settings_store[key] = data
+        except Exception:
+            pass
+
+
+@app.get("/api/settings")
+async def get_settings(request: Request):
+    """Get settings for this client IP (persisted to disk)."""
+    ip = _client_ip(request)
+    key = _history_key(ip)
+    _ensure_settings_loaded(key, ip)
+    stored = _settings_store.get(key, {})
+    return {**_SETTINGS_DEFAULTS, **stored}
+
+
+@app.post("/api/settings")
+async def post_settings(request: Request):
+    """Save settings for this client IP. Persisted to disk."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    ip = _client_ip(request)
+    key = _history_key(ip)
+    current = _settings_store.get(key, {})
+    _settings_store[key] = {**current, **body}
+    _save_settings_for_ip(ip, _settings_store[key])
+    return _settings_store[key]
+
+
+@app.get("/api/history")
+async def get_history(request: Request):
+    """Get history entries for this client IP (persisted to disk)."""
+    key = _history_key(_client_ip(request))
+    if key not in _history_store:
+        # Lazy-load from disk if we have a file (e.g. server restarted)
+        path = _HISTORY_DIR / _safe_ip_filename(_client_ip(request))
+        if path.is_file():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    _history_store[key] = data[: _MAX_HISTORY_ENTRIES]
+            except Exception:
+                pass
+    return _history_store.get(key, [])
+
+
+@app.post("/api/history")
+async def post_history(request: Request):
+    """Replace history for this client IP (full array). Persisted to disk."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = []
+    entries = list(body)[:_MAX_HISTORY_ENTRIES] if isinstance(body, list) else []
+    ip = _client_ip(request)
+    key = _history_key(ip)
+    _history_store[key] = entries
+    _save_history_for_ip(ip, entries)
+    return _history_store[key]
+
+
+def _ensure_queue_loaded(key: str, ip: str) -> None:
+    """Load queue from disk if not in memory (e.g. after restart)."""
+    if key in _queue_store:
+        return
+    path = _QUEUE_DIR / _safe_ip_filename(ip)
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                _queue_store[key] = data
+        except Exception:
+            pass
+
+
+@app.get("/api/queue")
+async def get_queue(request: Request):
+    """Get download queue for this client IP (persisted to disk)."""
+    ip = _client_ip(request)
+    key = _history_key(ip)
+    _ensure_queue_loaded(key, ip)
+    return _queue_store.get(key, [])
+
+
+@app.post("/api/queue")
+async def post_queue(request: Request):
+    """Replace download queue for this client IP. Persisted to disk."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = []
+    queue = list(body) if isinstance(body, list) else []
+    ip = _client_ip(request)
+    key = _history_key(ip)
+    _queue_store[key] = queue
+    _save_queue_for_ip(ip, queue)
+    return _queue_store[key]
 
 
 # Browser-like headers so YouTube/other CDNs don't return 403 on proxy download

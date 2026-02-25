@@ -1,3 +1,5 @@
+import type { Theme } from '../types'
+
 const KEY = 'webdownloader-settings'
 
 export type DefaultFormats = {
@@ -11,6 +13,7 @@ export type UserSettings = {
   defaultQualityIndex: number
   namingTemplate: string
   downloadConcurrency: number
+  theme?: Theme
 }
 
 const defaults: UserSettings = {
@@ -18,6 +21,7 @@ const defaults: UserSettings = {
   defaultQualityIndex: 0,
   namingTemplate: '%name%',
   downloadConcurrency: 3,
+  theme: 'system',
 }
 
 export function loadSettings(): UserSettings {

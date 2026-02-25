@@ -16,10 +16,17 @@ import { initTheme, getStoredTheme, applyTheme } from './lib/theme'
 import { loadSettings, applyNamingTemplate, type UserSettings } from './lib/settings'
 
 const API = '/api'
+const MAX_HISTORY = 200
 
 type TabId = 'home' | 'downloads' | 'queue' | 'history' | 'settings' | 'about'
 const TAB_ORDER: TabId[] = ['home', 'downloads', 'queue', 'history', 'settings', 'about']
 type ProgressState = { phase: 'downloading' | 'converting' | 'streaming'; progress: number | null; bytes: number }
+
+async function fetchJson<T>(url: string): Promise<T> {
+  const r = await fetch(url)
+  if (!r.ok) throw new Error(r.statusText)
+  return r.json()
+}
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabId>('home')
@@ -36,7 +43,7 @@ export default function App() {
   const [files, setFiles] = useState<FoundFile[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>(() => historyLib.loadHistory())
+  const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([])
   const [theme, setTheme] = useState<Theme>(() => getStoredTheme())
   const [settings, setSettings] = useState<UserSettings>(() => loadSettings())
   const [downloadQueue, setDownloadQueue] = useState<FoundFile[]>([])
@@ -44,10 +51,49 @@ export default function App() {
   const [downloadProgress, setDownloadProgress] = useState<Record<string, ProgressState>>({})
   const [downloadError, setDownloadError] = useState<string | null>(null)
   const [pendingSearchUrl, setPendingSearchUrl] = useState<string | null>(null)
+  const [dataLoaded, setDataLoaded] = useState(false)
   const queueConcurrency = settings.downloadConcurrency
 
   useEffect(() => {
     initTheme()
+  }, [])
+
+  // Load per-IP settings, history, queue from API (fallback to localStorage/empty if API fails)
+  useEffect(() => {
+    let cancelled = false
+    Promise.all([
+      fetchJson<UserSettings>(`${API}/settings`).catch(() => loadSettings()),
+      fetchJson<HistoryEntry[]>(`${API}/history`).catch(() => historyLib.loadHistory()),
+      fetchJson<FoundFile[]>(`${API}/queue`).catch(() => []),
+    ]).then(([apiSettings, apiHistory, apiQueue]) => {
+      if (cancelled) return
+      setSettings(apiSettings)
+      const themeVal = apiSettings.theme ?? 'system'
+      setTheme(themeVal)
+      applyTheme(themeVal)
+      setHistoryEntries(Array.isArray(apiHistory) ? apiHistory : [])
+      setDownloadQueue(Array.isArray(apiQueue) ? apiQueue : [])
+      setDataLoaded(true)
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  const saveSettingsToApi = useCallback((s: UserSettings) => {
+    fetch(`${API}/settings`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(s) })
+      .then((r) => { if (!r.ok) console.warn('Save settings failed', r.status) })
+      .catch((e) => console.warn('Save settings error', e))
+  }, [])
+
+  const saveHistoryToApi = useCallback((entries: HistoryEntry[]) => {
+    fetch(`${API}/history`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(entries.slice(0, MAX_HISTORY)) })
+      .then((r) => { if (!r.ok) console.warn('Save history failed', r.status) })
+      .catch((e) => console.warn('Save history error', e))
+  }, [])
+
+  const saveQueueToApi = useCallback((queue: FoundFile[]) => {
+    fetch(`${API}/queue`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(queue) })
+      .then((r) => { if (!r.ok) console.warn('Save queue failed', r.status) })
+      .catch((e) => console.warn('Save queue error', e))
   }, [])
 
   const fetchCrawls = useCallback(async () => {
@@ -90,6 +136,7 @@ export default function App() {
 
   // Sync history with crawl results (most recent crawl per URL)
   useEffect(() => {
+    if (!dataLoaded) return
     let changed = false
     const next = historyEntries.map((e) => {
       const crawl = crawls.find((c) => c.url === e.url) // crawls are newest first
@@ -99,10 +146,24 @@ export default function App() {
       return { ...e, lastCrawlId: crawl.id, lastFileCount: crawl.fileCount, lastStatus: crawl.status }
     })
     if (changed) {
-      historyLib.saveHistory(next)
       setHistoryEntries(next)
+      saveHistoryToApi(next)
     }
-  }, [crawls])
+  }, [crawls, dataLoaded, historyEntries, saveHistoryToApi])
+
+  function addHistoryEntryAndSave(entry: Omit<HistoryEntry, 'addedAt'>) {
+    const newEntry: HistoryEntry = { ...entry, addedAt: Date.now() }
+    const existing = historyEntries.findIndex((e) => e.url === entry.url)
+    let next: HistoryEntry[]
+    if (existing >= 0) {
+      next = [...historyEntries]
+      next[existing] = { ...newEntry, addedAt: historyEntries[existing]!.addedAt, title: historyEntries[existing]!.title || entry.title }
+    } else {
+      next = [newEntry, ...historyEntries]
+    }
+    setHistoryEntries(next)
+    saveHistoryToApi(next)
+  }
 
   async function startCrawl() {
     const url = inputUrl.trim()
@@ -118,7 +179,7 @@ export default function App() {
       const crawl = await r.json()
       setCrawls((prev) => [crawl, ...prev])
       setInputUrl('')
-      setHistoryEntries(historyLib.addToHistory({ id: randomUUID(), url, title: url, lastCrawlId: crawl.id, lastFileCount: 0, lastStatus: 'running' }))
+      addHistoryEntryAndSave({ id: randomUUID(), url, title: url, lastCrawlId: crawl.id, lastFileCount: 0, lastStatus: 'running' })
       setPendingSearchUrl(url)
       handleTabChange('downloads')
     } catch (e) {
@@ -139,7 +200,7 @@ export default function App() {
       })
       .then((crawl) => {
         setCrawls((prev) => [crawl, ...prev])
-        setHistoryEntries(historyLib.addToHistory({ id: randomUUID(), url, title: url, lastCrawlId: crawl.id, lastFileCount: 0, lastStatus: 'running' }))
+        addHistoryEntryAndSave({ id: randomUUID(), url, title: url, lastCrawlId: crawl.id, lastFileCount: 0, lastStatus: 'running' })
         setPendingSearchUrl(url)
         handleTabChange('downloads')
       })
@@ -338,17 +399,30 @@ export default function App() {
       setDownloadError(e instanceof Error ? e.message : 'Download failed')
     } finally {
       setActiveDownloadIds((prev) => prev.filter((id) => id !== file.id))
-      setDownloadQueue((prev) => prev.filter((f) => f.id !== file.id))
+      setDownloadQueue((prev) => {
+        const next = prev.filter((f) => f.id !== file.id)
+        saveQueueToApi(next)
+        return next
+      })
       setProgress(file.id, null)
     }
   }
 
   function addToQueue(file: FoundFile) {
-    setDownloadQueue((prev) => (prev.some((f) => f.id === file.id) ? prev : [...prev, file]))
+    setDownloadQueue((prev) => {
+      if (prev.some((f) => f.id === file.id)) return prev
+      const next = [...prev, file]
+      saveQueueToApi(next)
+      return next
+    })
   }
 
   function removeFromQueue(fileId: string) {
-    setDownloadQueue((prev) => prev.filter((f) => f.id !== fileId))
+    setDownloadQueue((prev) => {
+      const next = prev.filter((f) => f.id !== fileId)
+      saveQueueToApi(next)
+      return next
+    })
   }
 
   useEffect(() => {
@@ -432,20 +506,37 @@ export default function App() {
         {activeTab === 'history' && (
           <HistoryList
             entries={historyEntries}
-            onUpdateTitle={(id, title) => setHistoryEntries(historyLib.updateHistoryEntry(id, { title }))}
-            onDelete={(id) => setHistoryEntries(historyLib.removeFromHistory(id))}
+            onUpdateTitle={(id, title) => {
+              const next = historyEntries.map((e) => (e.id === id ? { ...e, title } : e))
+              setHistoryEntries(next)
+              saveHistoryToApi(next)
+            }}
+            onDelete={(id) => {
+              const next = historyEntries.filter((e) => e.id !== id)
+              setHistoryEntries(next)
+              saveHistoryToApi(next)
+            }}
             onReCrawl={(url) => startCrawlByUrl(url)}
           />
         )}
         {activeTab === 'settings' && (
           <Settings
+            settings={settings}
             theme={theme}
-            onThemeChange={handleThemeChange}
-            onClearHistory={() => {
-              historyLib.saveHistory([])
-              setHistoryEntries([])
+            onThemeChange={(t) => {
+              handleThemeChange(t)
+              const next = { ...settings, theme: t }
+              setSettings(next)
+              saveSettingsToApi(next)
             }}
-            onSettingsChange={setSettings}
+            onClearHistory={() => {
+              setHistoryEntries([])
+              saveHistoryToApi([])
+            }}
+            onSettingsChange={(s) => {
+              setSettings(s)
+              saveSettingsToApi(s)
+            }}
           />
         )}
         {activeTab === 'about' && <About />}

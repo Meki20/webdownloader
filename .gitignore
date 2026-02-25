@@ -1,5 +1,7 @@
 # Backend
 backend/.venv/
+backend/data/
+# (data/history, data/settings, data/queue store per-IP JSON)
 backend/__pycache__/
 backend/app/__pycache__/
 *.pyc

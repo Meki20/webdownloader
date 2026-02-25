@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import type { Theme } from '../types'
 import { applyTheme } from '../lib/theme'
-import { loadSettings, saveSettings, type UserSettings, type DefaultFormats } from '../lib/settings'
+import type { UserSettings, DefaultFormats } from '../lib/settings'
 import { OUTPUT_FORMATS } from '../constants'
 
 const API = '/api'
@@ -11,10 +11,11 @@ type UpdateCheckResult =
   | { error: string; unavailable?: boolean }
 
 type Props = {
+  settings: UserSettings
   theme: Theme
   onThemeChange: (t: Theme) => void
   onClearHistory: () => void
-  onSettingsChange?: (s: UserSettings) => void
+  onSettingsChange: (s: UserSettings) => void
 }
 
 const styles: Record<string, React.CSSProperties> = {
@@ -110,20 +111,15 @@ const styles: Record<string, React.CSSProperties> = {
   },
 }
 
-export function Settings({ theme, onThemeChange, onClearHistory, onSettingsChange }: Props) {
-  const [settings, setSettingsState] = useState<UserSettings>(() => loadSettings())
+export function Settings({ settings, theme, onThemeChange, onClearHistory, onSettingsChange }: Props) {
   const [checkStatus, setCheckStatus] = useState<'idle' | 'checking'>('idle')
   const [checkResult, setCheckResult] = useState<UpdateCheckResult | null>(null)
   const [installStatus, setInstallStatus] = useState<'idle' | 'installing' | 'done' | 'error'>('idle')
   const [installError, setInstallError] = useState<string | null>(null)
 
-  useEffect(() => {
-    onSettingsChange?.(settings)
-  }, [settings, onSettingsChange])
-
   const update = (patch: Partial<UserSettings>) => {
-    const next = saveSettings(patch)
-    setSettingsState(next)
+    const next = { ...settings, ...patch }
+    onSettingsChange(next)
   }
 
   const setDefaultFormats = (type: keyof DefaultFormats, value: string) => {

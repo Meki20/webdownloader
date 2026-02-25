@@ -58,6 +58,8 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         if request.url.path.startswith("/api/updates/check"):
             return await call_next(request)
+        if request.url.path.startswith("/api/settings") or request.url.path.startswith("/api/history") or request.url.path.startswith("/api/queue"):
+            return await call_next(request)
         if not request.url.path.startswith("/api/"):
             return await call_next(request)
         key = request.headers.get("X-API-Key", "").strip()
