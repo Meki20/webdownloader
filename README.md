@@ -116,6 +116,19 @@ To put WebDownloader behind nginx (e.g. to use port 80/443, HTTPS, or another si
 
 **Optional — bind backend only to localhost:** If you only want the app reachable via nginx (not on port 8000), change the systemd service `ExecStart` to use `--host 127.0.0.1` instead of `--host 0.0.0.0`, then `sudo systemctl daemon-reload && sudo systemctl restart webdownloader`.
 
+### Updates (from GitHub)
+
+- **Manual:** From the project root run `sudo ./deploy/update-ubuntu.sh` to pull from `origin/main`, rebuild the frontend, and restart the service.
+- **From the app (Settings → Updates):** Use "Check for updates" and "Install update" for a one-click update. For that to work, allow the service user to run the update script without a password:
+  ```bash
+  sudo visudo -f /etc/sudoers.d/webdownloader-update
+  ```
+  Add one line (replace `/opt/webdownloader` if you installed elsewhere):
+  ```
+  www-data ALL=(ALL) NOPASSWD: /opt/webdownloader/deploy/update-ubuntu.sh
+  ```
+  Save and exit. The repo must be a git clone (e.g. from [github.com/Meki20/webdownloader](https://github.com/Meki20/webdownloader)); the script runs `git fetch origin main` and `git reset --hard origin/main`.
+
 ## SaaS / production deployment
 
 Set environment variables (e.g. in systemd `Environment=` or a `.env` file in the backend directory):

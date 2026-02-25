@@ -19,6 +19,8 @@ cd "$ROOT/frontend"
 npm ci --silent 2>/dev/null || npm install --silent
 npm run build
 
+chmod +x "$ROOT/deploy/update-ubuntu.sh" 2>/dev/null || true
+
 echo "Installing systemd service..."
 sed "s|/opt/webdownloader|$ROOT|g" "$ROOT/deploy/webdownloader.service" | sudo tee /etc/systemd/system/webdownloader.service > /dev/null
 sudo systemctl daemon-reload

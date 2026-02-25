@@ -272,7 +272,7 @@ export function Settings({ theme, onThemeChange, onClearHistory, onSettingsChang
       </div>
       </div>
 
-      <div style={styles.block}>
+      <div style={{ ...styles.block, marginTop: 24 }}>
         <div style={styles.blockTitle}>Updates</div>
         <p style={styles.hint}>Pull latest from GitHub (main) and restart the app. Only applies when running from a git clone (e.g. Ubuntu deploy).</p>
         <div style={{ ...styles.row, flexWrap: 'wrap', gap: 12, alignItems: 'center' }}>
