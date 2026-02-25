@@ -195,10 +195,43 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _GITHUB_REPO = "Meki20/webdownloader"
 
 
+def _github_headers() -> dict[str, str]:
+    """Headers for GitHub API: User-Agent (required), Accept, optional Authorization from GITHUB_TOKEN."""
+    headers = {
+        "Accept": "application/vnd.github.v3+json",
+        "User-Agent": "WebDownloader-update-check",
+    }
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GITHUB_API_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token.strip()}"
+    return headers
+
+
+def _github_error_message(status_code: int, response: httpx.Response) -> str:
+    """User-friendly message for GitHub API errors; 403 is often rate limit."""
+    if status_code == 403:
+        try:
+            data = response.json()
+            if "rate limit" in (data.get("message") or "").lower():
+                return (
+                    "GitHub rate limit exceeded (60/hour without token). "
+                    "Set GITHUB_TOKEN on the server for higher limits, or try again later."
+                )
+        except Exception:
+            pass
+        return (
+            "GitHub API forbidden (403). "
+            "If rate limited: set GITHUB_TOKEN on the server or try again later."
+        )
+    if status_code == 404:
+        return "No releases found"
+    return f"GitHub API: {status_code}"
+
+
 def _get_tag_commit_sha(tag_name: str) -> str | None:
     """Resolve a tag to its commit SHA via GitHub API. Returns None on failure."""
     ref_url = f"https://api.github.com/repos/{_GITHUB_REPO}/git/refs/tags/{tag_name}"
-    ref_resp = httpx.get(ref_url, timeout=10, headers={"Accept": "application/vnd.github.v3+json"})
+    ref_resp = httpx.get(ref_url, timeout=10, headers=_github_headers())
     if ref_resp.status_code != 200:
         return None
     obj = (ref_resp.json().get("object") or {})
@@ -210,7 +243,7 @@ def _get_tag_commit_sha(tag_name: str) -> str | None:
         tag_url = obj.get("url")
         if not tag_url:
             return None
-        tag_resp = httpx.get(tag_url, timeout=10, headers={"Accept": "application/vnd.github.v3+json"})
+        tag_resp = httpx.get(tag_url, timeout=10, headers=_github_headers())
         if tag_resp.status_code != 200:
             return None
         obj2 = (tag_resp.json().get("object") or {})
@@ -245,10 +278,10 @@ def _updates_check_sync() -> dict:
         r = httpx.get(
             f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest",
             timeout=10,
-            headers={"Accept": "application/vnd.github.v3+json"},
+            headers=_github_headers(),
         )
         if r.status_code != 200:
-            return {"error": "No releases found" if r.status_code == 404 else f"GitHub API: {r.status_code}"}
+            return {"error": _github_error_message(r.status_code, r)}
         data = r.json()
         latest_tag = (data.get("tag_name") or "").strip()
         if not latest_tag:
@@ -373,7 +406,7 @@ def _version_info_sync() -> dict:
                 resp = httpx.get(
                     f"https://api.github.com/repos/{_GITHUB_REPO}/releases/tags/{tag}",
                     timeout=10,
-                    headers={"Accept": "application/vnd.github.v3+json"},
+                    headers=_github_headers(),
                 )
                 if resp.status_code == 200:
                     data = resp.json()
@@ -389,7 +422,7 @@ def _version_info_sync() -> dict:
                 list_resp = httpx.get(
                     f"https://api.github.com/repos/{_GITHUB_REPO}/releases",
                     timeout=10,
-                    headers={"Accept": "application/vnd.github.v3+json"},
+                    headers=_github_headers(),
                 )
                 if list_resp.status_code == 200:
                     for release in list_resp.json():
@@ -399,7 +432,7 @@ def _version_info_sync() -> dict:
                         ref_resp = httpx.get(
                             f"https://api.github.com/repos/{_GITHUB_REPO}/git/refs/tags/{t}",
                             timeout=5,
-                            headers={"Accept": "application/vnd.github.v3+json"},
+                            headers=_github_headers(),
                         )
                         if ref_resp.status_code != 200:
                             continue
@@ -409,7 +442,7 @@ def _version_info_sync() -> dict:
                             obj_resp = httpx.get(
                                 obj.get("url"),
                                 timeout=5,
-                                headers={"Accept": "application/vnd.github.v3+json"},
+                                headers=_github_headers(),
                             )
                             if obj_resp.status_code == 200:
                                 obj = obj_resp.json().get("object") or {}
