@@ -9,10 +9,25 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 cd "$ROOT"
 
 GITHUB_REPO="Meki20/webdownloader"
+# Use token from env or from repo .env (for one-click update when running as www-data)
+if [ -z "$GITHUB_TOKEN" ] && [ -f "$ROOT/.env" ]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "$ROOT/.env" 2>/dev/null || true
+  set +a
+fi
+CURL_OPTS=(-sS -L -H "Accept: application/vnd.github.v3+json" -H "User-Agent: WebDownloader-update/1.0")
+if [ -n "$GITHUB_TOKEN" ]; then
+  CURL_OPTS+=(-H "Authorization: Bearer $GITHUB_TOKEN")
+fi
 echo "Fetching latest release from GitHub..."
-TAG=$(curl -sS -H "Accept: application/vnd.github.v3+json" "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" | grep '"tag_name"' | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')
+RESP=$(curl "${CURL_OPTS[@]}" "https://api.github.com/repos/${GITHUB_REPO}/releases/latest")
+TAG=$(echo "$RESP" | grep '"tag_name"' | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')
 if [ -z "$TAG" ]; then
   echo "No release found. Updates are from GitHub releases only."
+  if echo "$RESP" | grep -q '"message"'; then
+    echo "GitHub API response: $(echo "$RESP" | sed -n 's/.*"message": *"\([^"]*\)".*/\1/p')"
+  fi
   exit 1
 fi
 echo "Checking out release $TAG..."
