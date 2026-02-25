@@ -8,7 +8,7 @@ const API = '/api'
 type UpdateCheckResult =
   | { upToDate: true; currentSha?: string }
   | { upToDate: false; behind: number; currentSha?: string; latestSha?: string }
-  | { error: string }
+  | { error: string; unavailable?: boolean }
 
 type Props = {
   theme: Theme
@@ -136,8 +136,13 @@ export function Settings({ theme, onThemeChange, onClearHistory, onSettingsChang
     try {
       const r = await fetch(`${API}/updates/check`)
       const data = await r.json().catch(() => ({}))
-      if (!r.ok) setCheckResult({ error: data.detail || r.statusText || 'Check failed' })
-      else setCheckResult(data as UpdateCheckResult)
+      if (r.status === 404) {
+        setCheckResult({ error: 'Update check not available on this server.', unavailable: true })
+      } else if (!r.ok) {
+        setCheckResult({ error: data.detail || r.statusText || 'Check failed' })
+      } else {
+        setCheckResult(data as UpdateCheckResult)
+      }
     } catch (e) {
       setCheckResult({ error: e instanceof Error ? e.message : 'Check failed' })
     } finally {
@@ -285,7 +290,9 @@ export function Settings({ theme, onThemeChange, onClearHistory, onSettingsChang
             {checkStatus === 'checking' ? 'Checking…' : 'Check for updates'}
           </button>
           {checkResult && 'error' in checkResult && (
-            <span style={{ color: 'var(--danger)', fontSize: 14 }}>{checkResult.error}</span>
+            <span style={{ color: checkResult.unavailable ? 'var(--text-muted)' : 'var(--danger)', fontSize: 14 }}>
+              {checkResult.error}
+            </span>
           )}
           {checkResult && 'upToDate' in checkResult && checkResult.upToDate && (
             <span style={{ color: 'var(--text-muted)', fontSize: 14 }}>You're up to date.</span>
