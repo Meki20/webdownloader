@@ -118,7 +118,7 @@ To put WebDownloader behind nginx (e.g. to use port 80/443, HTTPS, or another si
 
 ### Updates (from GitHub)
 
-- **Manual:** From the project root run `sudo ./deploy/update-ubuntu.sh` to pull from `origin/main`, rebuild the frontend, and restart the service.
+- **Manual:** From the project root run `sudo ./deploy/update-ubuntu.sh` to install the latest [GitHub release](https://github.com/Meki20/webdownloader/releases), rebuild the frontend, and restart the service.
 - **From the app (Settings → Updates):** Use "Check for updates" and "Install update" for a one-click update. For that to work, allow the service user to run the update script without a password:
   ```bash
   sudo visudo -f /etc/sudoers.d/webdownloader-update
@@ -127,7 +127,7 @@ To put WebDownloader behind nginx (e.g. to use port 80/443, HTTPS, or another si
   ```
   www-data ALL=(ALL) NOPASSWD: /opt/webdownloader/deploy/update-ubuntu.sh
   ```
-  Save and exit. The repo must be a git clone (e.g. from [github.com/Meki20/webdownloader](https://github.com/Meki20/webdownloader)); the script runs `git fetch origin main` and `git reset --hard origin/main`.
+  Save and exit. The repo must be a git clone (e.g. from [github.com/Meki20/webdownloader](https://github.com/Meki20/webdownloader)). The script fetches the latest release tag from GitHub and checks out that tag; if there are no releases, it falls back to `origin/main`.
 
 - **If "Check for updates" returns 503:** The service user (`www-data`) needs read access to the git repo. Run: `sudo chown -R www-data:www-data /opt/webdownloader` (use your install path). Ensure `git` is installed (`apt install git`).
 

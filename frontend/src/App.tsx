@@ -52,10 +52,20 @@ export default function App() {
   const [downloadError, setDownloadError] = useState<string | null>(null)
   const [pendingSearchUrl, setPendingSearchUrl] = useState<string | null>(null)
   const [dataLoaded, setDataLoaded] = useState(false)
+  const [versionInfo, setVersionInfo] = useState<{ version: string; tag?: string; name?: string; body?: string; published_at?: string; html_url?: string } | null>(null)
   const queueConcurrency = settings.downloadConcurrency
 
   useEffect(() => {
     initTheme()
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    fetch(`${API}/version`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((v) => { if (!cancelled && v) setVersionInfo(v) })
+      .catch(() => {})
+    return () => { cancelled = true }
   }, [])
 
   // Load per-IP settings, history, queue from API (fallback to localStorage/empty if API fails)
@@ -459,7 +469,7 @@ export default function App() {
 
   return (
     <div className="app-layout" style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', maxWidth: 960, margin: '0 auto', padding: '0 20px' }}>
-      <Header activeTab={activeTab} onTab={handleTabChange} downloadCount={files.length} queueCount={downloadQueue.length} />
+      <Header activeTab={activeTab} onTab={handleTabChange} downloadCount={files.length} queueCount={downloadQueue.length} version={versionInfo?.version} />
       <main style={{ flex: 1, padding: '24px 0', overflow: 'hidden' }} className="main-content">
         <div key={activeTab} className={`tab-content tab-content-enter tab-content-enter-${tabDirection}`}>
         {activeTab === 'home' && (
@@ -539,7 +549,7 @@ export default function App() {
             }}
           />
         )}
-        {activeTab === 'about' && <About />}
+        {activeTab === 'about' && <About versionInfo={versionInfo} />}
         </div>
       </main>
     </div>

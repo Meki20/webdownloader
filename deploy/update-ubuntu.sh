@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Update WebDownloader from git (pull main), rebuild frontend, restart service.
+# Update WebDownloader to the latest GitHub release (tag), rebuild frontend, restart service.
 # Run from project root or with full path: sudo ./deploy/update-ubuntu.sh
 # For one-click update from the app UI, allow www-data to run this without password:
 #   sudo visudo -f /etc/sudoers.d/webdownloader-update
@@ -8,9 +8,18 @@ set -e
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 cd "$ROOT"
 
-echo "Pulling from origin/main..."
-git fetch origin main
-git reset --hard origin/main
+GITHUB_REPO="Meki20/webdownloader"
+echo "Fetching latest release from GitHub..."
+TAG=$(curl -sS -H "Accept: application/vnd.github.v3+json" "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" | grep '"tag_name"' | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')
+if [ -z "$TAG" ]; then
+  echo "No release found. Falling back to origin/main."
+  git fetch origin main
+  git reset --hard origin/main
+else
+  echo "Checking out release $TAG..."
+  git fetch origin tag "$TAG"
+  git reset --hard "$TAG"
+fi
 
 echo "Backend: updating Python deps..."
 cd "$ROOT/backend"

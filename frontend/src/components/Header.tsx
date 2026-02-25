@@ -16,6 +16,7 @@ type Props = {
   onTab: (tab: TabId) => void
   downloadCount?: number
   queueCount?: number
+  version?: string
 }
 
 const tabRadius = 20
@@ -80,7 +81,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
 }
 
-export function Header({ activeTab, onTab, downloadCount = 0, queueCount = 0 }: Props) {
+export function Header({ activeTab, onTab, downloadCount = 0, queueCount = 0, version }: Props) {
   const navRef = useRef<HTMLDivElement>(null)
   const [pillStyle, setPillStyle] = useState({ left: 0, top: 0, width: 0, height: 0, opacity: 0 })
 
@@ -129,7 +130,7 @@ export function Header({ activeTab, onTab, downloadCount = 0, queueCount = 0 }: 
   return (
     <header style={styles.wrapper} className="app-header">
       <div style={styles.titleRow}>
-        <h1 style={styles.logo}>WebDownloader</h1>
+        <h1 style={styles.logo}>WebDownloader{version ? ` ${version}` : ''}</h1>
       </div>
       <nav style={styles.navWrap} role="tablist" aria-label="Main navigation">
         <div ref={navRef} style={styles.nav}>

@@ -21,6 +21,10 @@ npm run build
 
 chmod +x "$ROOT/deploy/update-ubuntu.sh" 2>/dev/null || true
 
+echo "Creating data dir (history, settings, queue) for service user..."
+sudo mkdir -p "$ROOT/backend/data"/{history,settings,queue}
+sudo chown -R www-data:www-data "$ROOT/backend/data"
+
 echo "Installing systemd service..."
 sed "s|/opt/webdownloader|$ROOT|g" "$ROOT/deploy/webdownloader.service" | sudo tee /etc/systemd/system/webdownloader.service > /dev/null
 sudo systemctl daemon-reload

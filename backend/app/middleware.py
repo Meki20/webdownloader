@@ -37,7 +37,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if request.url.path.startswith("/api/health") or request.url.path.startswith("/api/ready"):
             return await call_next(request)
-        if request.url.path.startswith("/api/updates/check"):
+        if request.url.path.startswith("/api/updates/check") or request.url.path.startswith("/api/version"):
             return await call_next(request)
         ip = _get_client_ip(request)
         if _rate_limit_exceeded(ip):
@@ -56,7 +56,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         if request.url.path.startswith("/api/health") or request.url.path.startswith("/api/ready"):
             return await call_next(request)
-        if request.url.path.startswith("/api/updates/check"):
+        if request.url.path.startswith("/api/updates/check") or request.url.path.startswith("/api/version"):
             return await call_next(request)
         if request.url.path.startswith("/api/settings") or request.url.path.startswith("/api/history") or request.url.path.startswith("/api/queue"):
             return await call_next(request)

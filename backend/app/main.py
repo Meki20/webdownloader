@@ -147,10 +147,16 @@ def _client_ip(request: Request) -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    _DATA_DIR.mkdir(parents=True, exist_ok=True)
-    _HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-    _SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
-    _QUEUE_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        _DATA_DIR.mkdir(parents=True, exist_ok=True)
+        _HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        _SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
+        _QUEUE_DIR.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        _log.warning(
+            "Cannot create backend/data (Permission denied). Create it and chown to the service user, e.g.: "
+            "sudo mkdir -p /opt/webdownloader/backend/data/{history,settings,queue} && sudo chown -R www-data:www-data /opt/webdownloader/backend/data"
+        )
     _load_history_from_disk()
     _load_settings_from_disk()
     _load_queue_from_disk()
@@ -185,23 +191,41 @@ async def ready():
 
 # Repo root (backend/app/main.py -> backend -> repo root)
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+_GITHUB_REPO = "Meki20/webdownloader"
 
 
 def _updates_check_sync() -> dict:
-    """Check if repo is behind origin/main. Uses existing refs (read-only; no git fetch)."""
+    """Check if repo is behind the latest GitHub release (tag)."""
     import subprocess as sp
     try:
-        # Compare HEAD to origin/main without fetching (avoids needing write access to .git for www-data)
-        r = sp.run(
-            ["git", "-C", str(_REPO_ROOT), "rev-list", "--count", "HEAD..origin/main"],
+        # Get latest release tag from GitHub API
+        r = httpx.get(
+            f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest",
+            timeout=10,
+            headers={"Accept": "application/vnd.github.v3+json"},
+        )
+        if r.status_code != 200:
+            return {"error": "No releases found" if r.status_code == 404 else f"GitHub API: {r.status_code}"}
+        tag_name = (r.json().get("tag_name") or "").strip()
+        if not tag_name:
+            return {"error": "No release tag in response"}
+        # Fetch the tag so we can compare (needs write to .git)
+        sp.run(
+            ["git", "-C", str(_REPO_ROOT), "fetch", "origin", "tag", tag_name],
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        r2 = sp.run(
+            ["git", "-C", str(_REPO_ROOT), "rev-list", "--count", f"HEAD..{tag_name}"],
             capture_output=True,
             text=True,
             timeout=5,
         )
-        if r.returncode != 0:
-            err = (r.stderr or r.stdout or "").strip() or "Not a git repo or origin/main not found"
+        if r2.returncode != 0:
+            err = (r2.stderr or r2.stdout or "").strip() or f"Could not compare to {tag_name}"
             return {"error": err}
-        behind = int(r.stdout.strip() or "0")
+        behind = int(r2.stdout.strip() or "0")
         current = sp.run(
             ["git", "-C", str(_REPO_ROOT), "rev-parse", "HEAD"],
             capture_output=True,
@@ -209,7 +233,7 @@ def _updates_check_sync() -> dict:
             timeout=2,
         )
         latest = sp.run(
-            ["git", "-C", str(_REPO_ROOT), "rev-parse", "origin/main"],
+            ["git", "-C", str(_REPO_ROOT), "rev-parse", tag_name],
             capture_output=True,
             text=True,
             timeout=2,
@@ -217,12 +241,13 @@ def _updates_check_sync() -> dict:
         current_sha = (current.stdout or "").strip()[:12] if current.returncode == 0 else ""
         latest_sha = (latest.stdout or "").strip()[:12] if latest.returncode == 0 else ""
         if behind == 0:
-            return {"upToDate": True, "currentSha": current_sha}
+            return {"upToDate": True, "currentSha": current_sha, "latestTag": tag_name}
         return {
             "upToDate": False,
             "behind": behind,
             "currentSha": current_sha,
             "latestSha": latest_sha,
+            "latestTag": tag_name,
         }
     except Exception as e:
         return {"error": str(e)}
@@ -249,9 +274,68 @@ def _updates_install_sync() -> str | None:
         return str(e)
 
 
+def _version_info_sync() -> dict:
+    """Current version (git describe) and release info from GitHub for that tag."""
+    import subprocess as sp
+    out: dict = {"version": "dev"}
+    try:
+        r = sp.run(
+            ["git", "-C", str(_REPO_ROOT), "describe", "--tags", "--exact-match"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        if r.returncode != 0:
+            r2 = sp.run(
+                ["git", "-C", str(_REPO_ROOT), "describe", "--tags"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            tag = (r2.stdout or "").strip() if r2.returncode == 0 else None
+        else:
+            tag = (r.stdout or "").strip()
+        if tag:
+            out["version"] = tag
+            out["tag"] = tag
+            try:
+                resp = httpx.get(
+                    f"https://api.github.com/repos/{_GITHUB_REPO}/releases/tags/{tag}",
+                    timeout=10,
+                    headers={"Accept": "application/vnd.github.v3+json"},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    out["name"] = data.get("name") or tag
+                    out["body"] = data.get("body") or ""
+                    out["published_at"] = data.get("published_at") or ""
+                    out["html_url"] = data.get("html_url") or ""
+            except Exception:
+                pass
+        else:
+            r3 = sp.run(
+                ["git", "-C", str(_REPO_ROOT), "rev-parse", "--short", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            if r3.returncode == 0 and (r3.stdout or "").strip():
+                out["version"] = (r3.stdout or "").strip()
+    except Exception:
+        pass
+    return out
+
+
+@app.get("/api/version")
+async def get_version():
+    """Current version and release notes for the installed release (from GitHub)."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_executor, _version_info_sync)
+
+
 @app.get("/api/updates/check")
 async def updates_check():
-    """Check if the app is behind origin/main."""
+    """Check if the app is behind the latest GitHub release."""
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(_executor, _updates_check_sync)
     if "error" in result:
@@ -261,7 +345,7 @@ async def updates_check():
 
 @app.post("/api/updates/install")
 async def updates_install():
-    """Pull from main, rebuild frontend, restart service. Requires sudo for the update script."""
+    """Checkout latest GitHub release, rebuild frontend, restart service. Requires sudo for the update script."""
     loop = asyncio.get_event_loop()
     err = await loop.run_in_executor(_executor, _updates_install_sync)
     if err:
