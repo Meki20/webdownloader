@@ -23,6 +23,7 @@ type Props = {
   onDownload: (file: FoundFile) => void
   onAddPlaylistToQueue?: (items: FoundFile[], options: { format: string; qualityIndex: number; playlistTitle: string }) => void
   onSwitchToQueue?: () => void
+  onDeleteGroup?: (groupKey: string) => void
   defaultQualityIndex?: number
   defaultFormats?: { video?: string; audio?: string; image?: string }
 }
@@ -136,6 +137,23 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 13,
     color: 'var(--text-muted)',
     flexShrink: 0,
+  },
+  groupDeleteBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 8,
+    background: 'transparent',
+    color: 'var(--text-muted)',
+    border: 'none',
+    borderRadius: 6,
+    cursor: 'pointer',
+    flexShrink: 0,
+  },
+  groupDeleteIcon: {
+    width: 18,
+    height: 18,
+    display: 'block',
   },
   groupBody: {
     padding: '8px 0',
@@ -273,6 +291,7 @@ export function FileList(props: Props) {
     onDownload,
     onAddPlaylistToQueue,
     onSwitchToQueue,
+    onDeleteGroup,
     defaultQualityIndex = 0,
     defaultFormats = {},
   } = props
@@ -365,7 +384,7 @@ export function FileList(props: Props) {
   }, [files, sortBy])
 
   const toggleCollapsed = (key: string) => {
-    setCollapsed((prev) => ({ ...prev, [key]: !prev[key] }))
+    setCollapsed((prev) => ({ ...prev, [key]: !(prev[key] ?? true) }))
   }
 
   if (files.length === 0 && !pendingSearchUrl) {
@@ -406,7 +425,7 @@ export function FileList(props: Props) {
       {downloadError && <p style={styles.error}>{downloadError}</p>}
       <ul style={styles.groupList}>
         {groupEntries.map(([key, groupFiles]) => {
-          const isCollapsed = collapsed[key]
+          const isCollapsed = collapsed[key] ?? true
           const linkLabel = key === 'other' ? 'Other media' : truncateLink(key)
           const groupThumbUrl = groupFiles.find((f) => f.thumbnail)?.thumbnail || ''
           const showThumb = groupThumbUrl && !thumbFail[key]
@@ -435,6 +454,22 @@ export function FileList(props: Props) {
                   <span style={styles.groupLink} title={key === 'other' ? 'Other media' : key}>{linkLabel}</span>
                 </div>
                 <span style={styles.groupMeta}>{groupFiles.length} file{groupFiles.length !== 1 ? 's' : ''}</span>
+                {onDeleteGroup && (
+                  <button
+                    type="button"
+                    style={styles.groupDeleteBtn}
+                    onClick={(e) => { e.stopPropagation(); onDeleteGroup(key) }}
+                    aria-label="Remove this link and its files"
+                    title="Remove this link and its files"
+                  >
+                    <svg style={styles.groupDeleteIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                      <polyline points="3 6 5 6 21 6" />
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                      <line x1="10" y1="11" x2="10" y2="17" />
+                      <line x1="14" y1="11" x2="14" y2="17" />
+                    </svg>
+                  </button>
+                )}
               </button>
               {!isCollapsed && (
                 <div style={styles.groupBody}>

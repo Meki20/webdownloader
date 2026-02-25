@@ -62,6 +62,16 @@ export default function App() {
 
   const playlistJobBlobsRef = useRef<Record<string, { total: number; title: string; files: Map<number, { blob: Blob; filename: string }> }>>({})
   const userHasAddedToQueueRef = useRef(false)
+  const deletedDownloadGroupKeysRef = useRef<Set<string>>(function loadDeletedGroups() {
+    try {
+      const raw = localStorage.getItem('webdownloader-deleted-download-groups')
+      if (raw) {
+        const arr = JSON.parse(raw)
+        return new Set(Array.isArray(arr) ? arr : [])
+      }
+    } catch (_) {}
+    return new Set()
+  }())
 
   useEffect(() => {
     initTheme()
@@ -126,17 +136,25 @@ export default function App() {
       .catch((e) => console.warn('Save queue error', e))
   }, [])
 
+  const crawlGroupKey = (c: { url?: string | null }) => (c.url?.trim() ? c.url : 'other')
+
   const fetchCrawls = useCallback(async () => {
     try {
       const r = await fetch(`${API}/crawls`)
-      if (r.ok) setCrawls(await r.json())
+      if (!r.ok) return
+      const data: Crawl[] = await r.json()
+      const deleted = deletedDownloadGroupKeysRef.current
+      setCrawls(data.filter((c) => !deleted.has(crawlGroupKey(c))))
     } catch (_) {}
   }, [])
 
   const fetchFiles = useCallback(async () => {
     try {
       const r = await fetch(`${API}/files`)
-      if (r.ok) setFiles(await r.json())
+      if (!r.ok) return
+      const data: FoundFile[] = await r.json()
+      const deleted = deletedDownloadGroupKeysRef.current
+      setFiles(data.filter((f) => !deleted.has(f.crawlUrl?.trim() ? f.crawlUrl : 'other')))
     } catch (_) {}
   }, [])
 
@@ -511,6 +529,37 @@ export default function App() {
       saveQueueToApi(next)
       return next
     })
+    setActiveDownloadIds((prev) => prev.filter((id) => id !== fileId))
+    setDownloadProgress((prev) => {
+      const next = { ...prev }
+      delete next[fileId]
+      return next
+    })
+  }
+
+  function getDownloadGroupKey(f: FoundFile): string {
+    return f.crawlUrl?.trim() ? f.crawlUrl : 'other'
+  }
+
+  function deleteDownloadGroup(groupKey: string) {
+    deletedDownloadGroupKeysRef.current.add(groupKey)
+    try {
+      localStorage.setItem('webdownloader-deleted-download-groups', JSON.stringify([...deletedDownloadGroupKeysRef.current]))
+    } catch (_) {}
+    const idsInGroup = files.filter((f) => getDownloadGroupKey(f) === groupKey).map((f) => f.id)
+    setFiles((prev) => prev.filter((f) => getDownloadGroupKey(f) !== groupKey))
+    setCrawls((prev) => prev.filter((c) => (groupKey === 'other' ? !c.url?.trim() : c.url !== groupKey)))
+    setDownloadQueue((prev) => {
+      const next = prev.filter((f) => !idsInGroup.includes(f.id))
+      saveQueueToApi(next)
+      return next
+    })
+    setActiveDownloadIds((prev) => prev.filter((id) => !idsInGroup.includes(id)))
+    setDownloadProgress((prev) => {
+      const next = { ...prev }
+      idsInGroup.forEach((id) => delete next[id])
+      return next
+    })
   }
 
   useEffect(() => {
@@ -580,6 +629,7 @@ export default function App() {
               onDownload={addToQueue}
               onAddPlaylistToQueue={addPlaylistToQueue}
               onSwitchToQueue={() => handleTabChange('queue')}
+              onDeleteGroup={deleteDownloadGroup}
               defaultQualityIndex={settings.defaultQualityIndex}
               defaultFormats={settings.defaultFormats}
             />

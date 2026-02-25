@@ -358,7 +358,14 @@ def _updates_install_sync() -> str | None:
             cwd=str(_REPO_ROOT),
         )
         if result.returncode != 0:
-            return result.stderr or result.stdout or f"Exit code {result.returncode}"
+            out = (result.stderr or result.stdout or "").strip()
+            # Prefer a single structured ERROR line for the frontend
+            if out:
+                for line in out.splitlines():
+                    line = line.strip()
+                    if line.upper().startswith("ERROR:"):
+                        return line
+            return out or f"Exit code {result.returncode}"
         return None
     except FileNotFoundError:
         return "sudo or update script not found. Install is only supported on Linux with sudo."
